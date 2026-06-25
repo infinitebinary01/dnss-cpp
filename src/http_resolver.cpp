@@ -207,60 +207,70 @@ bool HttpResolver::openFunc(const std::string& host, const std::string& port,
                              asio::ssl::stream<asio::ip::tcp::socket>& stream,
                              boost::system::error_code& ec) {
     asio::io_context tmpCtx;
+    {
+        boost::system::error_code openEc;
+        stream.next_layer().open(asio::ip::tcp::v4(), openEc);
+        if (!openEc) {
+            setSocketTimeout(stream.next_layer(), 2);
+            { int syn = 2; setsockopt(stream.next_layer().native_handle(), IPPROTO_TCP, TCP_SYNCNT, &syn, sizeof(syn)); }
+        }
+    }
 
     if (useProxy_) {
         tcp::resolver resolver(tmpCtx);
         auto proxyEp = resolver.resolve(proxyHost_, proxyPort_, ec);
-        if (ec) return false;
-
-        asio::connect(stream.next_layer(), proxyEp.begin(), proxyEp.end(), ec);
-        if (ec) return false;
-
-        setSocketTimeout(stream.next_layer(), 2);
-        { int flag = 1; setsockopt(stream.next_layer().native_handle(), SOL_TCP, TCP_NODELAY, &flag, sizeof(flag)); }
-
-        std::string connectReq = "CONNECT " + host + ":" + port + " HTTP/1.1\r\n"
-                                 "Host: " + host + ":" + port + "\r\n"
-                                 "User-Agent: dnss-cpp/0.1\r\n"
-                                 "Proxy-Connection: Keep-Alive\r\n"
-                                 "\r\n";
-        asio::write(stream.next_layer(), asio::buffer(connectReq), ec);
-        if (ec) return false;
-
-        std::array<char, 1024> buf;
-        size_t n = stream.next_layer().read_some(asio::buffer(buf), ec);
-        if (ec) return false;
-
-        std::string resp(buf.data(), n);
-        if (resp.find("200") == std::string::npos) {
-            ec = boost::asio::error::connection_refused;
-            return false;
+        if (!ec) {
+            asio::connect(stream.next_layer(), proxyEp.begin(), proxyEp.end(), ec);
         }
+        if (!ec) {
+            { int flag = 1; setsockopt(stream.next_layer().native_handle(), SOL_TCP, TCP_NODELAY, &flag, sizeof(flag)); }
 
-        if (!SSL_set_tlsext_host_name(stream.native_handle(), host.c_str())) {
-            ec = boost::asio::error::no_protocol_option;
-            return false;
+            std::string connectReq = "CONNECT " + host + ":" + port + " HTTP/1.1\r\n"
+                                     "Host: " + host + ":" + port + "\r\n"
+                                     "User-Agent: dnss-cpp/0.1\r\n"
+                                     "Proxy-Connection: Keep-Alive\r\n"
+                                     "\r\n";
+            asio::write(stream.next_layer(), asio::buffer(connectReq), ec);
         }
-        stream.handshake(asio::ssl::stream_base::client, ec);
-        if (ec) return false;
-    } else {
-        tcp::resolver resolver(tmpCtx);
-        auto results = resolver.resolve(host, port, ec);
-        if (ec) return false;
-
-        asio::connect(stream.next_layer(), results.begin(), results.end(), ec);
-        if (ec) return false;
-
-        setSocketTimeout(stream.next_layer(), 2);
-        { int flag = 1; setsockopt(stream.next_layer().native_handle(), SOL_TCP, TCP_NODELAY, &flag, sizeof(flag)); }
-
-        if (!SSL_set_tlsext_host_name(stream.native_handle(), host.c_str())) {
-            ec = boost::asio::error::no_protocol_option;
-            return false;
+        if (!ec) {
+            std::array<char, 1024> buf;
+            size_t n = stream.next_layer().read_some(asio::buffer(buf), ec);
+            if (!ec) {
+                std::string resp(buf.data(), n);
+                if (resp.find("200") == std::string::npos)
+                    ec = boost::asio::error::connection_refused;
+            }
         }
-        stream.handshake(asio::ssl::stream_base::client, ec);
-        if (ec) return false;
+        if (!ec) {
+            if (!SSL_set_tlsext_host_name(stream.native_handle(), host.c_str()))
+                ec = boost::asio::error::no_protocol_option;
+        }
+        if (!ec) {
+            stream.handshake(asio::ssl::stream_base::client, ec);
+        }
+        if (ec) {
+            boost::system::error_code closeEc;
+            stream.next_layer().close(closeEc);
+        } else {
+            return true;
+        }
     }
+
+    tcp::resolver resolver(tmpCtx);
+    auto results = resolver.resolve(host, port, ec);
+    if (ec) return false;
+
+    asio::connect(stream.next_layer(), results.begin(), results.end(), ec);
+    if (ec) return false;
+
+    { int flag = 1; setsockopt(stream.next_layer().native_handle(), SOL_TCP, TCP_NODELAY, &flag, sizeof(flag)); }
+
+    if (!SSL_set_tlsext_host_name(stream.native_handle(), host.c_str())) {
+        ec = boost::asio::error::no_protocol_option;
+        return false;
+    }
+    stream.handshake(asio::ssl::stream_base::client, ec);
+    if (ec) return false;
 
     return true;
 }
@@ -294,37 +304,7 @@ void HttpResolver::init() {
     warmThread_ = std::thread([this]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         warmUp();
-        prewarmCache(this);
     });
-}
-
-static const char* POPULAR_DOMAINS[] = {
-    "google.com", "youtube.com", "facebook.com", "amazon.com",
-    "yahoo.com", "wikipedia.org", "reddit.com", "twitter.com",
-    "instagram.com", "linkedin.com", "netflix.com", "github.com",
-    "apple.com", "microsoft.com", "stackoverflow.com", "cloudflare.com",
-    "whatsapp.com", "zoom.us", "office.com", "live.com"
-};
-
-static void prewarmCache(HttpResolver* resolver) {
-    // Wait until at least one connection is ready
-    for (int i = 0; i < 30; i++) {
-        if (resolver->countConnected() > 0) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    }
-    if (resolver->countConnected() == 0) {
-        LOG_WARN("Prewarm: no connections ready, skipping");
-        return;
-    }
-    int count = 0;
-    for (auto* name : POPULAR_DOMAINS) {
-        auto queryA = DnsMessage::createQuery(name, DnsType::A);
-        if (queryA && resolver->query(*queryA)) count++;
-        auto queryAAAA = DnsMessage::createQuery(name, DnsType::AAAA);
-        if (queryAAAA && resolver->query(*queryAAAA)) count++;
-    }
-    LOG_INFO("Prewarm: cached " + std::to_string(count) + " entries for " +
-             std::to_string(sizeof(POPULAR_DOMAINS)/sizeof(POPULAR_DOMAINS[0])) + " domains");
 }
 
 void HttpResolver::maintain() {}
@@ -346,62 +326,76 @@ bool HttpResolver::Connection::open(const std::string& proxyHost,
                                      boost::system::error_code& ec) {
     close();
     stream = std::make_unique<asio::ssl::stream<tcp::socket>>(ctx, sslCtx);
+    boost::system::error_code openEc;
+    stream->next_layer().open(asio::ip::tcp::v4(), openEc);
+    if (openEc) { ec = openEc; return false; }
+    setSocketTimeout(stream->next_layer(), 2);
+    { int syn = 2; setsockopt(stream->next_layer().native_handle(), IPPROTO_TCP, TCP_SYNCNT, &syn, sizeof(syn)); }
 
     bool bypass = useProxy && matchesNoProxy(host, proxyNoProxy);
     if (useProxy && !bypass) {
         tcp::resolver resolver(ctx);
         auto proxyEp = resolver.resolve(proxyHost, proxyPort, ec);
-        if (ec) return false;
-
-        asio::connect(stream->next_layer(), proxyEp.begin(), proxyEp.end(), ec);
-        if (ec) return false;
-
-        setSocketTimeout(stream->next_layer(), 2);
-        int flag = 1;
-        setsockopt(stream->next_layer().native_handle(), SOL_TCP, TCP_NODELAY, &flag, sizeof(flag));
-
-        std::string connectReq = "CONNECT " + host + ":" + port + " HTTP/1.1\r\n"
-                                 "Host: " + host + ":" + port + "\r\n"
-                                 "User-Agent: dnss-cpp/0.1\r\n"
-                                 "Proxy-Connection: Keep-Alive\r\n"
-                                 "\r\n";
-        asio::write(stream->next_layer(), asio::buffer(connectReq), ec);
-        if (ec) return false;
-
-        std::array<char, 1024> buf;
-        size_t n = stream->next_layer().read_some(asio::buffer(buf), ec);
-        if (ec) return false;
-
-        std::string resp(buf.data(), n);
-        if (resp.find("200") == std::string::npos) {
-            ec = boost::asio::error::connection_refused;
-            return false;
+        if (!ec) {
+            asio::connect(stream->next_layer(), proxyEp.begin(), proxyEp.end(), ec);
         }
+        if (!ec) {
+            { int flag = 1; setsockopt(stream->next_layer().native_handle(), SOL_TCP, TCP_NODELAY, &flag, sizeof(flag)); }
 
-        if (!SSL_set_tlsext_host_name(stream->native_handle(), host.c_str())) {
-            ec = boost::asio::error::no_protocol_option;
-            return false;
+            std::string connectReq = "CONNECT " + host + ":" + port + " HTTP/1.1\r\n"
+                                     "Host: " + host + ":" + port + "\r\n"
+                                     "User-Agent: dnss-cpp/0.1\r\n"
+                                     "Proxy-Connection: Keep-Alive\r\n"
+                                     "\r\n";
+            asio::write(stream->next_layer(), asio::buffer(connectReq), ec);
         }
-        stream->handshake(asio::ssl::stream_base::client, ec);
-        if (ec) return false;
-    } else {
-        tcp::resolver resolver(ctx);
-        auto results = resolver.resolve(host, port, ec);
-        if (ec) return false;
-
-        asio::connect(stream->next_layer(), results.begin(), results.end(), ec);
-        if (ec) return false;
-
-        setSocketTimeout(stream->next_layer(), 2);
-        { int flag = 1; setsockopt(stream->next_layer().native_handle(), SOL_TCP, TCP_NODELAY, &flag, sizeof(flag)); }
-
-        if (!SSL_set_tlsext_host_name(stream->native_handle(), host.c_str())) {
-            ec = boost::asio::error::no_protocol_option;
-            return false;
+        if (!ec) {
+            std::array<char, 1024> buf;
+            size_t n = stream->next_layer().read_some(asio::buffer(buf), ec);
+            if (!ec) {
+                std::string resp(buf.data(), n);
+                if (resp.find("200") == std::string::npos)
+                    ec = boost::asio::error::connection_refused;
+            }
         }
-        stream->handshake(asio::ssl::stream_base::client, ec);
-        if (ec) return false;
+        if (!ec) {
+            if (!SSL_set_tlsext_host_name(stream->native_handle(), host.c_str()))
+                ec = boost::asio::error::no_protocol_option;
+        }
+        if (!ec) {
+            stream->handshake(asio::ssl::stream_base::client, ec);
+        }
+        if (!ec) {
+            connected = true;
+            return true;
+        }
     }
+
+    if (ec) {
+        close();
+        stream = std::make_unique<asio::ssl::stream<tcp::socket>>(ctx, sslCtx);
+        boost::system::error_code reOpenEc;
+        stream->next_layer().open(asio::ip::tcp::v4(), reOpenEc);
+        if (reOpenEc) { ec = reOpenEc; return false; }
+        setSocketTimeout(stream->next_layer(), 2);
+        { int syn = 2; setsockopt(stream->next_layer().native_handle(), IPPROTO_TCP, TCP_SYNCNT, &syn, sizeof(syn)); }
+    }
+
+    tcp::resolver resolver(ctx);
+    auto results = resolver.resolve(host, port, ec);
+    if (ec) return false;
+
+    asio::connect(stream->next_layer(), results.begin(), results.end(), ec);
+    if (ec) return false;
+
+    { int flag = 1; setsockopt(stream->next_layer().native_handle(), SOL_TCP, TCP_NODELAY, &flag, sizeof(flag)); }
+
+    if (!SSL_set_tlsext_host_name(stream->native_handle(), host.c_str())) {
+        ec = boost::asio::error::no_protocol_option;
+        return false;
+    }
+    stream->handshake(asio::ssl::stream_base::client, ec);
+    if (ec) return false;
 
     connected = true;
     return true;

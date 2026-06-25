@@ -288,6 +288,37 @@ int main(int argc, char* argv[]) {
             dnsServer->listenAndServe();
         });
         dnsThread.detach();
+
+        // Prewarm cache via CachingResolver so entries populate both tiers
+        if (cacheResolver) {
+            std::thread prewarmThread([cr = cacheResolver]() {
+                for (int i = 0; i < 30; i++) {
+                    if (cr->countConnected() > 0) break;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                }
+                if (cr->countConnected() == 0) {
+                    LOG_WARN("Prewarm: no connections ready, skipping");
+                    return;
+                }
+                static const char* doms[] = {
+                    "google.com", "youtube.com", "facebook.com", "amazon.com",
+                    "yahoo.com", "wikipedia.org", "reddit.com", "twitter.com",
+                    "instagram.com", "linkedin.com", "netflix.com", "github.com",
+                    "apple.com", "microsoft.com", "stackoverflow.com", "cloudflare.com",
+                    "whatsapp.com", "zoom.us", "office.com", "live.com"
+                };
+                int count = 0;
+                for (auto* name : doms) {
+                    auto qA = DnsMessage::createQuery(name, DnsType::A);
+                    if (qA && cr->query(*qA)) count++;
+                    auto qAAAA = DnsMessage::createQuery(name, DnsType::AAAA);
+                    if (qAAAA && cr->query(*qAAAA)) count++;
+                }
+                LOG_INFO("Prewarm: cached " + std::to_string(count) + " entries for " +
+                         std::to_string(sizeof(doms)/sizeof(doms[0])) + " domains");
+            });
+            prewarmThread.detach();
+        }
     }
 
     if (cfg.enableHttpsToDns) {

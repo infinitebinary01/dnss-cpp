@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset='utf-8'>
+<title>dnss-cpp Changelog</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f7fa;color:#2c3e50;padding:30px;max-width:900px;margin:0 auto;}
+h1{font-size:28px;font-weight:600;color:#1a73e8;margin-bottom:4px;}
+.subtitle{color:#5f6368;font-size:13px;margin-bottom:28px;}
+.version{background:#fff;border-radius:10px;padding:20px 24px;box-shadow:0 1px 3px rgba(0,0,0,0.08);margin-bottom:16px;border:1px solid #e8eaed;}
+.version h2{font-size:16px;font-weight:600;color:#1a73e8;margin-bottom:4px;}
+.version .date{font-size:12px;color:#5f6368;margin-bottom:12px;}
+.version ul{margin:0;padding-left:20px;}
+.version li{font-size:14px;color:#2c3e50;line-height:1.7;}
+.version li b{color:#1a73e8;}
+.version li code{background:#e8eaed;padding:1px 5px;border-radius:3px;font-size:13px;}
+.footer{margin-top:32px;padding-top:16px;border-top:1px solid #e8eaed;font-size:13px;color:#5f6368;}
+</style>
+</head>
+<body>
+<h1>dnss-cpp Changelog</h1>
+<p class='subtitle'>DNS-over-HTTPS proxy — a C++ port of dnss</p>
+
+<div class='version'>
+<h2>v0.2.0</h2>
+<p class='date'>2026-06-25</p>
+<ul>
+<li><b>Fixed</b>: Proxy path in <code>Connection::open()</code> — missing <code>return true</code> after successful proxy TLS handshake. Execution always fell through to the direct connection block, overwriting the proxy tunnel. <b>The daemon had never actually used the proxy</b> since the fallback was added.</li>
+<li><b>Fixed</b>: Prewarm bypassing the cache. <code>prewarmCache()</code> in <code>HttpResolver::init()</code> called <code>resolver->query()</code> directly on the HTTP resolver, bypassing the <code>CachingResolver</code>. Moved to <code>main.cpp</code> and runs through the caching layer so entries populate both L1 turbo and L2 LRU.</li>
+<li><b>Fixed</b>: <code>healthCheck()</code> double-decrement bug — removed all <code>mc.connected->store(false)</code> calls from health check. The callers already handle the <code>connected → false</code> transition via <code>exchange(false)</code> with conditional <code>fetch_sub(1)</code>. With health check pre-setting the flag, the caller's exchange saw false and skipped the decrement, leaking <code>connectedCount_</code> by +1 per failure.</li>
+<li><b>Changed</b>: Auto-tuner now grows connections based on pool utilization. When utilization > 85% and QPS > 5, adds 1–2 connections immediately (instead of waiting for high latency or errors). Lowers growth thresholds (latency 300→200ms, trend 10→5, error rate 0.03→0.02).</li>
+<li><b>Changed</b>: Removed redundant "Resource Usage" section from dashboard GUI — info was already shown in the four summary cards.</li>
+<li><b>Performance</b>: Benchmark results with 8 concurrent workers:<ul>
+<li>Cache-hit P95: <b>2.2ms</b> (well under 100ms target)</li>
+<li>Mixed workload P95: <b>67.5ms</b> (under 100ms target)</li>
+<li>Cache-miss (unique domains): P95 329ms — dominated by PdaNet proxy round-trip latency (~100ms)</li>
+</ul></li>
+</ul>
+</div>
+
+<div class='version'>
+<h2>v0.1.1</h2>
+<p class='date'>2026-06-20</p>
+<ul>
+<li><b>Fixed</b>: Negative active connection count in stats dashboard<ul>
+<li><code>Connection::exchange()</code> no longer sets <code>connected = false</code> on errors — <code>notifyFailure</code> now exclusively owns the flag via atomic <code>exchange(false)</code> with conditional decrement</li>
+<li>All three unconditional <code>connectedCount_</code> decrements (<code>notifyFailure</code>, <code>probeAllIdle</code>, background health check) now use <code>exchange(false)</code> and only decrement when the old value was <code>true</code></li>
+<li>Fixed race window by moving <code>inUse = false</code> to after <code>notifyFailure</code> in all callers</li>
+</ul></li>
+</ul>
+</div>
+
+<div class='version'>
+<h2>v0.1.0</h2>
+<p class='date'>2026-06-20</p>
+<ul>
+<li>Initial release</li>
+<li>DNS-over-HTTPS proxy with dual-tier caching (lock-free L1 turbo + LRU L2)</li>
+<li>Adaptive fan-out with Kalman-filtered PID auto-tuner</li>
+<li>Connection pooling with health checking and pre-warming</li>
+<li>Real-time monitoring dashboard and Prometheus metrics</li>
+</ul>
+</div>
+
+<div class='footer'>
+<a href='/'>Dashboard</a>
+<a href='https://github.com/infinitebinary01/dnss-cpp'>GitHub</a>
+</div>
+</body>
+</html>

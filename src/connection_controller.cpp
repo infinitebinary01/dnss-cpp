@@ -300,9 +300,9 @@ bool ConnectionController::healthCheck(ManagedConn& mc) {
     std::string header = oss.str();
 
     asio::write(*mc.stream, asio::buffer(header), ec);
-    if (ec) { mc.connected->store(false); return false; }
+    if (ec) return false;
     asio::write(*mc.stream, asio::buffer(wire), ec);
-    if (ec) { mc.connected->store(false); return false; }
+    if (ec) return false;
 
     std::vector<uint8_t> respBuf;
     respBuf.reserve(1024);
@@ -314,7 +314,7 @@ bool ConnectionController::healthCheck(ManagedConn& mc) {
         std::array<uint8_t, 1024> chunk;
         size_t n = mc.stream->read_some(asio::buffer(chunk), ec);
         if (ec == boost::asio::error::eof) break;
-        if (ec) { mc.connected->store(false); return false; }
+        if (ec) return false;
 
         size_t oldSize = respBuf.size();
         respBuf.resize(oldSize + n);
@@ -360,7 +360,6 @@ bool ConnectionController::healthCheck(ManagedConn& mc) {
     setSocketTimeout(mc.stream->next_layer(), 2);
 
     if (respBuf.empty()) {
-        mc.connected->store(false);
         return false;
     }
 

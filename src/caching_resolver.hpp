@@ -23,6 +23,8 @@ public:
     void maintain() override;
     DnsMessagePtr query(const DnsMessage& req) override;
 
+    int countConnected() const override;
+
     void flushCache();
     size_t cacheSize() const;
     int64_t hits() const;

@@ -295,3 +295,5 @@ size_t CachingResolver::cacheSize() const {
 int64_t CachingResolver::hits() const { return cacheHits_.load(); }
 int64_t CachingResolver::misses() const { return cacheMisses_.load(); }
 int64_t CachingResolver::total() const { return totalQueries_.load(); }
+
+int CachingResolver::countConnected() const { return back_->countConnected(); }

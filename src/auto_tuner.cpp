@@ -164,14 +164,21 @@ void AutoTuner::tune() {
     int curConn = connCount_.load();
     int newConn = curConn;
 
-    // Rapid growth on errors or sustained high latency
-    if (err > 0.03 || consecutiveHighErr_ >= 2) {
+    // Utilization-based growth: if pool is nearly full and load is real, scale fast
+    double util = perf.connUtilization;
+    if (util > 0.85 && qps > 5 && curConn < MAX_CONNS) {
+        int growth = util > 0.95 ? 2 : 1;
+        newConn = std::min(curConn + growth, MAX_CONNS);
+        LOG_DEBUG("AI-Tuner: +" + std::to_string(growth) + " connections (" +
+                  std::to_string(newConn) + ") — utilization " +
+                  std::to_string(static_cast<int>(util * 100)) + "%");
+    } else if (err > 0.02 || consecutiveHighErr_ >= 2) {
         newConn = std::min(curConn + 2, MAX_CONNS);
         LOG_DEBUG("AI-Tuner: +2 connections (" + std::to_string(newConn) + ") — errors");
-    } else if (lat > 300 && qps > 5 && curConn < MAX_CONNS) {
+    } else if (lat > 200 && qps > 5 && curConn < MAX_CONNS) {
         newConn = std::min(curConn + 1, MAX_CONNS);
         LOG_DEBUG("AI-Tuner: +1 connection (" + std::to_string(newConn) + ") — high latency under load");
-    } else if (trend > 10 && curConn < MAX_CONNS) {
+    } else if (trend > 5 && curConn < MAX_CONNS) {
         newConn = std::min(curConn + 1, MAX_CONNS);
         LOG_DEBUG("AI-Tuner: +1 connection (" + std::to_string(newConn) + ") — rising trend");
     } else if (consecutiveLowLoad_ >= 6 && curConn > MIN_CONNS) {

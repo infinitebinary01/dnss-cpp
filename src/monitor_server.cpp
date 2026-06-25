@@ -187,10 +187,6 @@ h1{font-size:24px;font-weight:600;color:#1a73e8;margin-bottom:4px;}
 .good{color:#188038!important;}
 .warn{color:#ea8600!important;}
 .bad{color:#d93025!important;}
-.bars{display:flex;flex-direction:column;gap:14px;}
-.bar-label{font-size:13px;color:#5f6368;margin-bottom:3px;}
-.bar-track{height:8px;background:#e8eaed;border-radius:4px;overflow:hidden;}
-.bar-fill{height:100%;border-radius:4px;transition:width 1s ease;}
 .footer{margin-top:32px;padding-top:16px;border-top:1px solid #e8eaed;font-size:13px;color:#5f6368;}
 .footer a{color:#1a73e8;text-decoration:none;margin-right:16px;}
 .footer a:hover{text-decoration:underline;}
@@ -247,28 +243,6 @@ h1{font-size:24px;font-weight:600;color:#1a73e8;margin-bottom:4px;}
 </div>
 </div>
 
-<div class='card'>
-<h2>Resource Usage</h2>
-<div class='bars'>
-<div>
-<div class='bar-label'>Connections (<span id='bar-conn-active'>0</span>/<span id='bar-conn-total'>0</span>)</div>
-<div class='bar-track'><div id='bar-conn-fill' class='bar-fill' style='width:0%;background:#1a73e8;'></div></div>
-</div>
-<div>
-<div class='bar-label'>Thread Pool (<span id='bar-pool-pending'>0</span> pending)</div>
-<div class='bar-track'><div id='bar-pool-fill' class='bar-fill' style='width:0%;background:#ea8600;'></div></div>
-</div>
-<div>
-<div class='bar-label'>L1 Turbo Hit Rate (<span id='bar-turbo-rate'>0</span>%)</div>
-<div class='bar-track'><div id='bar-turbo-fill' class='bar-fill' style='width:0%;background:#1a73e8;'></div></div>
-</div>
-<div>
-<div class='bar-label'>L2 Main Hit Rate (<span id='bar-l2-rate'>0</span>%)</div>
-<div class='bar-track'><div id='bar-l2-fill' class='bar-fill' style='width:0%;background:#188038;'></div></div>
-</div>
-</div>
-</div>
-
 <div class='footer'>
 <a href='/metrics'>Prometheus Metrics</a>
 <a href='/api/stats'>JSON API</a>
@@ -285,7 +259,6 @@ function update() {
     function q(id) { return document.getElementById(id); }
     function cls(id, c) { q(id).className = c; }
     function v(id, val) { q(id).textContent = val; }
-    function css(id, p, val) { q(id).style[p] = val; }
 
     v('ts', ts);
 
@@ -323,18 +296,7 @@ function update() {
     v('tuner-refresh', refresh + '%');
     v('tuner-fanout', fanout ? 'enabled' : 'disabled');
 
-    v('bar-conn-active', active);
-    v('bar-conn-total', total);
-    css('bar-conn-fill', 'width', (total > 0 ? (active/total*100) : 0).toFixed(0) + '%');
-    v('bar-pool-pending', pending);
-    css('bar-pool-fill', 'width', Math.min(pending*10, 100).toFixed(0) + '%');
-    v('bar-hit-rate', (hr*100).toFixed(1));
-    css('bar-hit-fill', 'width', (hr*100).toFixed(0) + '%');
-    v('bar-turbo-rate', (thr*100).toFixed(1));
-    css('bar-turbo-fill', 'width', (thr*100).toFixed(0) + '%');
-    var l2pct = Math.max(0, (hr - thr)*100);
-    v('bar-l2-rate', l2pct.toFixed(1));
-    css('bar-l2-fill', 'width', l2pct.toFixed(0) + '%');
+
   };
   r.open('GET', '/api/stats', true);
   r.send();

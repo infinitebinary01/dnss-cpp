@@ -11,4 +11,5 @@ public:
     virtual void init() {}
     virtual void maintain() {}
     virtual DnsMessagePtr query(const DnsMessage& req) = 0;
+    virtual int countConnected() const { return 0; }
 };
