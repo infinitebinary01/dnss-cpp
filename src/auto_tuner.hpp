@@ -32,8 +32,8 @@ public:
 private:
     AutoTuner() = default;
 
-    std::atomic<int> connCount_{12};
-    std::atomic<int> threadCount_{8};
+    std::atomic<int> connCount_{16};
+    std::atomic<int> threadCount_{12};
     std::atomic<int> refreshPct_{10};
     std::atomic<bool> fanOut_{true};
 
@@ -63,11 +63,11 @@ private:
     double baselineLat_ = 0;
     int samplesCollected_ = 0;
 
-    static constexpr size_t MAX_HISTORY = 60; // 5 min at 5s intervals
+    static constexpr size_t MAX_HISTORY = 150; // 5 min at 2s intervals
     static constexpr int MIN_CONNS = 12;
-    static constexpr int MAX_CONNS = 64;
+    static constexpr int MAX_CONNS = 128;
     static constexpr int MIN_THREADS = 8;
-    static constexpr int MAX_THREADS = 16;
+    static constexpr int MAX_THREADS = 32;
 
     double computeTrend();
     double computeVariance();

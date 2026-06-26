@@ -88,7 +88,7 @@ private:
 
     ConnectionController connCtrl_;
 
-    static constexpr int MAX_CONNECTIONS = 64;
+    static constexpr int MAX_CONNECTIONS = 128;
     static constexpr int MAX_ERRORS_BEFORE_ROTATE = 3;
     static constexpr int CONNECT_TIMEOUT_SEC = 4;
 };

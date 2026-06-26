@@ -59,7 +59,7 @@ private:
     };
 
     // L1 turbo cache — per-entry spinlock, direct-mapped hot cache
-    static constexpr size_t TURBO_SIZE = 256;
+    static constexpr size_t TURBO_SIZE = 1024;
     struct TurboSlot {
         std::atomic<uint64_t> keyHash{0};
         std::atomic_flag lock = ATOMIC_FLAG_INIT;
