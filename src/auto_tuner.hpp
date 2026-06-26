@@ -32,8 +32,8 @@ public:
 private:
     AutoTuner() = default;
 
-    std::atomic<int> connCount_{16};
-    std::atomic<int> threadCount_{12};
+    std::atomic<int> connCount_{12};
+    std::atomic<int> threadCount_{8};
     std::atomic<int> refreshPct_{10};
     std::atomic<bool> fanOut_{true};
 

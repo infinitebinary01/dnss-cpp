@@ -26,13 +26,11 @@ h1{font-size:28px;font-weight:600;color:#1a73e8;margin-bottom:4px;}
 <h2>v0.2.2</h2>
 <p class='date'>2026-06-26</p>
 <ul>
-<li><b>Performance</b>: Aggressive tuning for high-throughput workloads (video streaming)<ul>
+<li><b>Performance</b>: Capacity increases for high-throughput workloads<ul>
 <li>L1 turbo cache: 256 → 1024 slots</li>
 <li>Max upstream connections: 64 → 128</li>
 <li>Max thread pool workers: 16 → 32</li>
 <li>DNS UDP workers: 2 → 4 (SO_REUSEPORT)</li>
-<li>Auto-tuner interval: 5s → 2s for faster adaptation</li>
-<li>Initial connection pool: 12 → 16, threads: 8 → 12</li>
 </ul></li>
 </ul>
 </div>

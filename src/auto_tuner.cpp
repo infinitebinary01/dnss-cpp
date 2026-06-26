@@ -27,7 +27,7 @@ void AutoTuner::start() {
     tuneThread_ = std::thread([this]() {
         try {
             while (running_) {
-                for (int i = 0; i < 20 && running_; i++)
+                for (int i = 0; i < 50 && running_; i++)
                     std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 if (!running_) break;
                 tune();

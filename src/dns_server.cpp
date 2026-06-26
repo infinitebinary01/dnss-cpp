@@ -103,14 +103,14 @@ private:
     std::queue<std::function<void()>> tasks_;
     std::condition_variable cv_;
     std::atomic<bool> stop_{false};
-    std::atomic<size_t> target_{16};
+    std::atomic<size_t> target_{8};
     std::atomic<size_t> liveCount_{0};
     static constexpr size_t MIN_WORKERS = 4;
     static constexpr size_t MAX_WORKERS = 32;
 };
 
 static ThreadPool& dnsPool() {
-    static ThreadPool pool(16);
+    static ThreadPool pool(8);
     return pool;
 }
 
