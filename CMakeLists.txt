@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(dnss VERSION 0.1.0 LANGUAGES C CXX)
+project(lynx VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -41,11 +41,11 @@ set(HEADERS
     src/connection_controller.hpp
 )
 
-add_executable(dnss ${SOURCES} ${HEADERS})
+add_executable(lynx ${SOURCES} ${HEADERS})
 
-target_include_directories(dnss PRIVATE src ${Boost_INCLUDE_DIRS})
+target_include_directories(lynx PRIVATE src ${Boost_INCLUDE_DIRS})
 
-target_link_libraries(dnss PRIVATE
+target_link_libraries(lynx PRIVATE
     ${Boost_LIBRARIES}
     OpenSSL::SSL
     OpenSSL::Crypto
@@ -54,8 +54,8 @@ target_link_libraries(dnss PRIVATE
 
 # Enable io_uring if available
 if(HAS_IO_URING)
-    target_compile_definitions(dnss PRIVATE HAS_IO_URING)
-    target_link_libraries(dnss PRIVATE uring)
+    target_compile_definitions(lynx PRIVATE HAS_IO_URING)
+    target_link_libraries(lynx PRIVATE uring)
     message(STATUS "io_uring support enabled")
 else()
     message(STATUS "io_uring not available (kernel or headers too old)")
@@ -65,13 +65,13 @@ endif()
 include(CheckCXXCompilerFlag)
 check_cxx_compiler_flag("-msse4.2" HAS_SSE42)
 if(HAS_SSE42)
-    target_compile_options(dnss PRIVATE -msse4.2)
-    target_compile_definitions(dnss PRIVATE __SSE4_2__)
+    target_compile_options(lynx PRIVATE -msse4.2)
+    target_compile_definitions(lynx PRIVATE __SSE4_2__)
     message(STATUS "SSE4.2 SIMD enabled")
 endif()
 
 # LTO / optimization
-target_compile_options(dnss PRIVATE -O3 -flto -march=native)
-target_link_options(dnss PRIVATE -O3 -flto -march=native)
+target_compile_options(lynx PRIVATE -O3 -flto -march=native)
+target_link_options(lynx PRIVATE -O3 -flto -march=native)
 
-install(TARGETS dnss RUNTIME DESTINATION bin)
+install(TARGETS lynx RUNTIME DESTINATION bin)

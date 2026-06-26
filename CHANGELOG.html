@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset='utf-8'>
-<title>dnss-cpp Changelog</title>
+<title>lynx Changelog</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f7fa;color:#2c3e50;padding:30px;max-width:900px;margin:0 auto;}
@@ -19,8 +19,20 @@ h1{font-size:28px;font-weight:600;color:#1a73e8;margin-bottom:4px;}
 </style>
 </head>
 <body>
-<h1>dnss-cpp Changelog</h1>
-<p class='subtitle'>DNS-over-HTTPS proxy — a C++ port of dnss</p>
+<h1>lynx Changelog</h1>
+<p class='subtitle'>DNS-over-HTTPS proxy</p>
+
+<div class='version'>
+<h2>v0.2.1</h2>
+<p class='date'>2026-06-26</p>
+<ul>
+<li><b>Added</b>: Logo (<code>logo.png</code>) in dashboard header — served from <code>/logo.png</code> route alongside "Lynx DoH DNS" branding</li>
+<li><b>Added</b>: JSON config file support via <code>--config=config.json</code></li>
+<li><b>Changed</b>: Dashboard title updated to "Lynx DoH DNS" throughout UI</li>
+<li><b>Fixed</b>: Logo path resolution — <code>findLogo()</code> now checks both binary-relative and installed paths</li>
+<li><b>Changed</b>: Renamed project from "dnss-cpp" to "lynx" in docs and changelog</li>
+</ul>
+</div>
 
 <div class='version'>
 <h2>v0.2.0</h2>

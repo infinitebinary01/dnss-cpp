@@ -26,7 +26,7 @@ jobs:
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j$(nproc)
       - name: Start daemon
         run: |
-          ./build/dnss --enable_dns_to_https --dns_listen_addr=:8053 --monitoring_listen_addr=:8085 &
+          ./build/lynx --enable_dns_to_https --dns_listen_addr=:8053 --monitoring_listen_addr=:8085 &
           sleep 3
       - name: Run integration test
         run: |

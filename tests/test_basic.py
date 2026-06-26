@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Integration tests for dnss-cpp"""
+"""Integration tests for lynx"""
 import socket
 import struct
 import time
@@ -8,8 +8,8 @@ import sys
 import os
 
 DNS_PORT = 8055
-MON_PORT = 8087
-BINARY = os.path.join(os.path.dirname(__file__), '..', 'build', 'dnss')
+MON_PORT = 8085
+BINARY = os.path.join(os.path.dirname(__file__), '..', 'build', 'lynx')
 
 def build_dns_query(domain, qtype=1):
     tid = 0x1234

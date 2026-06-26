@@ -32,5 +32,8 @@ dnss.log
 *.log
 *.pid
 
+# Config
+config.json
+
 # Misc
 a.out

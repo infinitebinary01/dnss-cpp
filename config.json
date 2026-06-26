@@ -1,9 +1,0 @@
-{
-    "dns_listen_addr": ":53",
-    "enable_dns_to_https": true,
-    "enable_cache": true,
-    "log_level": "info",
-    "monitoring_listen_addr": ":8085",
-    "https_upstream": "https://cloudflare-dns.com/dns-query",
-    "proxy": "http://192.168.49.1:8000/"
-}

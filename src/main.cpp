@@ -11,6 +11,7 @@
 #include <map>
 #include <sstream>
 #include <vector>
+#include <sys/stat.h>
 
 #include "logger.hpp"
 #include "dns_protocol.hpp"
@@ -67,7 +68,7 @@ struct Config {
 };
 
 static void printUsage(const char* prog) {
-    std::cerr << "dnss - DNS over HTTPS daemon (C++ port)\n"
+    std::cerr << "lynx - DNS over HTTPS daemon\n"
               << "Usage: " << prog << " [options]\n\n"
               << "Options:\n"
               << "  --config=<file>                    path to JSON config file\n"
@@ -139,6 +140,23 @@ static std::map<std::string, std::string> parseJson(const std::string& path) {
         }
     }
     return kv;
+}
+
+static std::string findLogo(const char* argv0) {
+    std::string tryPath;
+    // Check relative to binary directory
+    std::string bin(argv0);
+    auto slash = bin.rfind('/');
+    if (slash != std::string::npos) {
+        tryPath = bin.substr(0, slash + 1) + "logo.png";
+        struct stat st;
+        if (stat(tryPath.c_str(), &st) == 0) return tryPath;
+    }
+    // Check installed path
+    tryPath = "/usr/local/share/lynx/logo.png";
+    struct stat st;
+    if (stat(tryPath.c_str(), &st) == 0) return tryPath;
+    return "";
 }
 
 static Config parseArgs(int argc, char* argv[]) {
@@ -243,7 +261,7 @@ int main(int argc, char* argv[]) {
     else if (cfg.logLevel == "error") Logger::instance().setLevel(LogLevel::Error);
     if (cfg.logFormat == "json") Logger::instance().setJsonFormat(true);
 
-    LOG_INFO("dnss-cpp starting");
+    LOG_INFO("lynx starting");
 
     // Set proxy from config (if specified) before any resolver needs it
     if (!cfg.proxy.empty()) {
@@ -261,7 +279,8 @@ int main(int argc, char* argv[]) {
 
     // Start monitoring server
     std::string monAddr = cfg.monitoringListenAddr.empty() ? ":8080" : cfg.monitoringListenAddr;
-    monitorServer = std::make_unique<MonitorServer>(monAddr);
+    std::string logoPath = findLogo(argv[0]);
+    monitorServer = std::make_unique<MonitorServer>(monAddr, logoPath);
     monitorServer->start();
 
     if (!cfg.enableDnsToHttps && !cfg.enableHttpsToDns) {
@@ -386,6 +405,6 @@ int main(int argc, char* argv[]) {
     // Give threads time to clean up
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    LOG_INFO("dnss-cpp stopped");
+    LOG_INFO("lynx stopped");
     return 0;
 }

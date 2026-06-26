@@ -12,7 +12,7 @@ namespace asio = boost::asio;
 
 class MonitorServer {
 public:
-    MonitorServer(const std::string& addr);
+    MonitorServer(const std::string& addr, const std::string& logoPath = "");
     ~MonitorServer();
 
     void start();
@@ -29,6 +29,7 @@ private:
 
     std::string addr_;
     int port_ = 0;
+    std::string logoPath_;
     asio::io_context ctx_;
     asio::ip::tcp::acceptor acceptor_{ctx_};
     std::thread acceptThread_;

@@ -291,7 +291,7 @@ bool ConnectionController::healthCheck(ManagedConn& mc) {
     std::ostringstream oss;
     oss << "POST " << mc.target << " HTTP/1.1\r\n"
         << "Host: " << mc.host << "\r\n"
-        << "User-Agent: dnss-cpp/0.1\r\n"
+        << "User-Agent: lynx/0.2\r\n"
         << "Content-Type: application/dns-message\r\n"
         << "Accept: application/dns-message\r\n"
         << "Content-Length: " << wire.size() << "\r\n"

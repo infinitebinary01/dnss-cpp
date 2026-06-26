@@ -10,12 +10,13 @@
 #include <iomanip>
 #include <ctime>
 #include <chrono>
+#include <fstream>
 
 namespace sys = boost::system;
 
 using namespace std::chrono;
 
-MonitorServer::MonitorServer(const std::string& addr) : addr_(addr) {
+MonitorServer::MonitorServer(const std::string& addr, const std::string& logoPath) : addr_(addr), logoPath_(logoPath) {
     auto colon = addr.find(':');
     if (colon == std::string::npos) {
         LOG_ERROR("Invalid monitoring address: " + addr);
@@ -122,6 +123,20 @@ void MonitorServer::handleRequest(std::shared_ptr<asio::ip::tcp::socket> sock) {
             body = renderDashboard();
             contentType = "text/html; charset=utf-8";
             statusLine = "HTTP/1.1 200 OK\r\n";
+        } else if (path == "/logo.png" && !logoPath_.empty()) {
+            std::ifstream f(logoPath_, std::ios::binary | std::ios::ate);
+            if (f) {
+                size_t sz = f.tellg();
+                f.seekg(0);
+                body.resize(sz, '\0');
+                f.read(body.data(), sz);
+                contentType = "image/png";
+                statusLine = "HTTP/1.1 200 OK\r\n";
+            } else {
+                body = "404 Not Found";
+                contentType = "text/plain";
+                statusLine = "HTTP/1.1 404 Not Found\r\n";
+            }
         } else {
             body = "404 Not Found";
             contentType = "text/plain";
@@ -170,7 +185,7 @@ std::string MonitorServer::renderDashboard() {
     return R"foo(<!DOCTYPE html>
 <html>
 <head>
-<title>dnss-cpp v0.2 — Nexus</title>
+<title>Lynx DoH DNS v0.2</title>
 <meta charset='utf-8'>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
@@ -212,7 +227,7 @@ body{font-family:'JetBrains Mono',monospace;background:#4a4d55;color:#d0cec8;pad
 <canvas id='matrix'></canvas>
 <div class='container'>
 <div class='header'>
-<h1>dnss-cpp nexus</h1>
+<span style='display:flex;align-items:center;gap:10px'><img src='/logo.png' style='height:32px;border-radius:4px'><span>Lynx DoH DNS</span></span>
 <div class='ts'>SYS::UPTIME <span id='ts'>--:--:--</span></div>
 </div>
 
@@ -283,7 +298,7 @@ body{font-family:'JetBrains Mono',monospace;background:#4a4d55;color:#d0cec8;pad
 <a href='/api/stats'>[ JSON ]</a>
 <a href='/health'>[ HEALTH ]</a>
 <a href='https://github.com/infinitebinary01/dnss-cpp'>[ GITHUB ]</a>
-<span style='float:right'>dnss-cpp v0.2 &mdash; DNS over HTTPS Nexus</span>
+<span style='float:right'>Lynx DoH DNS v0.2</span>
 </div>
 </div>
 
@@ -423,39 +438,39 @@ std::string MonitorServer::renderPrometheus() {
     auto& tuner = AutoTuner::instance();
 
     std::ostringstream out;
-    out << "# HELP dnss_avg_latency_ms Average query latency\n"
-        << "# TYPE dnss_avg_latency_ms gauge\n"
-        << "dnss_avg_latency_ms " << perf.avgLatencyMs << "\n\n"
-        << "# HELP dnss_p95_latency_ms P95 query latency\n"
-        << "# TYPE dnss_p95_latency_ms gauge\n"
-        << "dnss_p95_latency_ms " << perf.p95LatencyMs << "\n\n"
-        << "# HELP dnss_cache_hit_rate Cache hit rate (0-1)\n"
-        << "# TYPE dnss_cache_hit_rate gauge\n"
-        << "dnss_cache_hit_rate " << perf.cacheHitRate << "\n\n"
-        << "# HELP dnss_error_rate Error rate (0-1)\n"
-        << "# TYPE dnss_error_rate gauge\n"
-        << "dnss_error_rate " << perf.errorRate << "\n\n"
-        << "# HELP dnss_conn_utilization Connection utilization (0-1)\n"
-        << "# TYPE dnss_conn_utilization gauge\n"
-        << "dnss_conn_utilization " << perf.connUtilization << "\n\n"
-        << "# HELP dnss_active_connections Active upstream connections\n"
-        << "# TYPE dnss_active_connections gauge\n"
-        << "dnss_active_connections " << perf.activeConnections << "\n\n"
-        << "# HELP dnss_recommended_connections Auto-tuner recommended connections\n"
-        << "# TYPE dnss_recommended_connections gauge\n"
-        << "dnss_recommended_connections " << tuner.recommendedConnections() << "\n\n"
-        << "# HELP dnss_recommended_threads Auto-tuner recommended threads\n"
-        << "# TYPE dnss_recommended_threads gauge\n"
-        << "dnss_recommended_threads " << tuner.recommendedThreads() << "\n\n"
-        << "# HELP dnss_cache_refresh_pct Cache refresh threshold percent\n"
-        << "# TYPE dnss_cache_refresh_pct gauge\n"
-        << "dnss_cache_refresh_pct " << tuner.cacheRefreshThresholdPct() << "\n\n"
-        << "# HELP dnss_fan_out_enabled Whether parallel fan-out is active\n"
-        << "# TYPE dnss_fan_out_enabled gauge\n"
-        << "dnss_fan_out_enabled " << (tuner.fanOutEnabled() ? "1" : "0") << "\n\n"
-        << "# HELP dnss_thread_pool_load Pending tasks in thread pool\n"
-        << "# TYPE dnss_thread_pool_load gauge\n"
-        << "dnss_thread_pool_load " << perf.threadPoolLoad << "\n";
+    out << "# HELP lynx_avg_latency_ms Average query latency\n"
+        << "# TYPE lynx_avg_latency_ms gauge\n"
+        << "lynx_avg_latency_ms " << perf.avgLatencyMs << "\n\n"
+        << "# HELP lynx_p95_latency_ms P95 query latency\n"
+        << "# TYPE lynx_p95_latency_ms gauge\n"
+        << "lynx_p95_latency_ms " << perf.p95LatencyMs << "\n\n"
+        << "# HELP lynx_cache_hit_rate Cache hit rate (0-1)\n"
+        << "# TYPE lynx_cache_hit_rate gauge\n"
+        << "lynx_cache_hit_rate " << perf.cacheHitRate << "\n\n"
+        << "# HELP lynx_error_rate Error rate (0-1)\n"
+        << "# TYPE lynx_error_rate gauge\n"
+        << "lynx_error_rate " << perf.errorRate << "\n\n"
+        << "# HELP lynx_conn_utilization Connection utilization (0-1)\n"
+        << "# TYPE lynx_conn_utilization gauge\n"
+        << "lynx_conn_utilization " << perf.connUtilization << "\n\n"
+        << "# HELP lynx_active_connections Active upstream connections\n"
+        << "# TYPE lynx_active_connections gauge\n"
+        << "lynx_active_connections " << perf.activeConnections << "\n\n"
+        << "# HELP lynx_recommended_connections Auto-tuner recommended connections\n"
+        << "# TYPE lynx_recommended_connections gauge\n"
+        << "lynx_recommended_connections " << tuner.recommendedConnections() << "\n\n"
+        << "# HELP lynx_recommended_threads Auto-tuner recommended threads\n"
+        << "# TYPE lynx_recommended_threads gauge\n"
+        << "lynx_recommended_threads " << tuner.recommendedThreads() << "\n\n"
+        << "# HELP lynx_cache_refresh_pct Cache refresh threshold percent\n"
+        << "# TYPE lynx_cache_refresh_pct gauge\n"
+        << "lynx_cache_refresh_pct " << tuner.cacheRefreshThresholdPct() << "\n\n"
+        << "# HELP lynx_fan_out_enabled Whether parallel fan-out is active\n"
+        << "# TYPE lynx_fan_out_enabled gauge\n"
+        << "lynx_fan_out_enabled " << (tuner.fanOutEnabled() ? "1" : "0") << "\n\n"
+        << "# HELP lynx_thread_pool_load Pending tasks in thread pool\n"
+        << "# TYPE lynx_thread_pool_load gauge\n"
+        << "lynx_thread_pool_load " << perf.threadPoolLoad << "\n";
     return out.str();
 }
 

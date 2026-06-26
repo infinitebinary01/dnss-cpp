@@ -1,4 +1,6 @@
-# dnss-cpp
+<img src="logo.png" alt="Lynx DoH DNS" width="128" align="right">
+
+# Lynx DoH DNS
 A high-performance DNS-over-HTTPS (DoH) daemon
 
 ## Features
@@ -37,7 +39,7 @@ A high-performance DNS-over-HTTPS (DoH) daemon
 
 ```bash
 git clone <repo-url>
-cd dnss-cpp
+cd lynx
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ```
@@ -46,7 +48,7 @@ cmake --build build -j$(nproc)
 
 ```bash
 # Start with Cloudflare DoH (uses https_proxy from environment if set)
-./build/dnss --enable_dns_to_https \
+./build/lynx --enable_dns_to_https \
   --https_upstream="https://cloudflare-dns.com/dns-query" \
   --enable_cache \
   --dns_listen_addr=":8053"
@@ -58,7 +60,7 @@ dig @127.0.0.1 -p 8053 google.com
 ### With config file
 
 ```bash
-./build/dnss --config=config.json
+./build/lynx --config=config.json
 ```
 
 See `--help` for all options.

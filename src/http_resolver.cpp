@@ -239,7 +239,7 @@ bool HttpResolver::openFunc(const std::string& host, const std::string& port,
 
             std::string connectReq = "CONNECT " + host + ":" + port + " HTTP/1.1\r\n"
                                      "Host: " + host + ":" + port + "\r\n"
-                                     "User-Agent: dnss-cpp/0.1\r\n"
+                                     "User-Agent: lynx/0.2\r\n"
                                      "Proxy-Connection: Keep-Alive\r\n"
                                      "\r\n";
             asio::write(stream.next_layer(), asio::buffer(connectReq), ec);
@@ -357,7 +357,7 @@ bool HttpResolver::Connection::open(const std::string& proxyHost,
 
             std::string connectReq = "CONNECT " + host + ":" + port + " HTTP/1.1\r\n"
                                      "Host: " + host + ":" + port + "\r\n"
-                                     "User-Agent: dnss-cpp/0.1\r\n"
+                                     "User-Agent: lynx/0.2\r\n"
                                      "Proxy-Connection: Keep-Alive\r\n"
                                      "\r\n";
             asio::write(stream->next_layer(), asio::buffer(connectReq), ec);
@@ -425,7 +425,7 @@ DnsMessagePtr HttpResolver::Connection::exchange(const std::vector<uint8_t>& wir
     std::ostringstream oss;
     oss << "POST " << target << " HTTP/1.1\r\n"
         << "Host: " << host << "\r\n"
-        << "User-Agent: dnss-cpp/0.1\r\n"
+        << "User-Agent: lynx/0.2\r\n"
         << "Content-Type: application/dns-message\r\n"
         << "Accept: application/dns-message\r\n"
         << "Content-Length: " << wire.size() << "\r\n"
