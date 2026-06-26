@@ -1,6 +1,5 @@
 # dnss-cpp
-
-A high-performance DNS-over-HTTPS (DoH) daemon written in modern C++17.
+A high-performance DNS-over-HTTPS (DoH) daemon
 
 ## Features
 
@@ -91,23 +90,6 @@ Open `http://localhost:8080` in a browser for the real-time dashboard:
 
 JSON API: `http://localhost:8080/api/stats`
 Prometheus: `http://localhost:8080/metrics`
-
-## Changelog
-
-### v0.1.0 (2026-06-20)
-
-- Initial release
-- DNS-over-HTTPS proxy with dual-tier caching (lock-free L1 turbo + LRU L2)
-- Adaptive fan-out with Kalman-filtered PID auto-tuner
-- Connection pooling with health checking and pre-warming
-- Real-time monitoring dashboard and Prometheus metrics
-
-### v0.1.1 (2026-06-20)
-
-- **Fixed**: Negative active connection count in stats dashboard
-  - `Connection::exchange()` no longer sets `connected = false` on errors — `notifyFailure` now exclusively owns the flag via atomic `exchange(false)` with conditional decrement, preventing mismatched increment/decrement sequences
-  - All three unconditional `connectedCount_` decrements in `ConnectionController` (`notifyFailure`, `probeAllIdle`, background health check) now use `exchange(false)` and only decrement when the old value was `true`
-  - Fixed race window by moving `inUse = false` to after `notifyFailure` in all callers
 
 ## License
 
