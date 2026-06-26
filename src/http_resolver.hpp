@@ -26,7 +26,7 @@ public:
 
     void init() override;
     void maintain() override;
-    DnsMessagePtr query(const DnsMessage& req) override;
+    DnsMessagePtr query(const DnsMessage& req, bool allowFanOut = true) override;
 
     int countConnected() const;
 
@@ -48,6 +48,7 @@ private:
     };
 
     DnsMessagePtr doPost(const DnsMessage& req);
+    DnsMessagePtr doPost(const DnsMessage& req, bool allowFanOut);
     DnsMessagePtr doPostParallel(const std::vector<uint8_t>& wire);
     DnsMessagePtr doFallback(const DnsMessage& req);
 
@@ -87,7 +88,7 @@ private:
 
     ConnectionController connCtrl_;
 
-    static constexpr int MAX_CONNECTIONS = 20;
+    static constexpr int MAX_CONNECTIONS = 64;
     static constexpr int MAX_ERRORS_BEFORE_ROTATE = 3;
     static constexpr int CONNECT_TIMEOUT_SEC = 4;
 };

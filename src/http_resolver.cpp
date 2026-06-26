@@ -20,6 +20,7 @@
 #include <sys/time.h>
 #include <algorithm>
 #include <future>
+#include <netinet/tcp.h>
 
 using tcp = asio::ip::tcp;
 using udp = asio::ip::udp;
@@ -127,6 +128,16 @@ static void setSocketTimeout(tcp::socket& socket, int seconds) {
     setsockopt(socket.native_handle(), SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 }
 
+static void enableFastOpen(tcp::socket& socket) {
+    int qlen = 5;
+    setsockopt(socket.native_handle(), SOL_TCP, TCP_FASTOPEN, &qlen, sizeof(qlen));
+}
+
+// Per-thread circuit breaker for proxy
+static thread_local int tlsProxyErrors = 0;
+static thread_local std::chrono::steady_clock::time_point tlsCircuitOpen;
+static thread_local bool tlsCircuitTripped = false;
+
 static bool parseUpstreamUrl(const std::string& upstream,
                              std::string& scheme, std::string& host,
                              std::string& port, std::string& target) {
@@ -224,6 +235,7 @@ bool HttpResolver::openFunc(const std::string& host, const std::string& port,
         }
         if (!ec) {
             { int flag = 1; setsockopt(stream.next_layer().native_handle(), SOL_TCP, TCP_NODELAY, &flag, sizeof(flag)); }
+            enableFastOpen(stream.next_layer());
 
             std::string connectReq = "CONNECT " + host + ":" + port + " HTTP/1.1\r\n"
                                      "Host: " + host + ":" + port + "\r\n"
@@ -341,6 +353,7 @@ bool HttpResolver::Connection::open(const std::string& proxyHost,
         }
         if (!ec) {
             { int flag = 1; setsockopt(stream->next_layer().native_handle(), SOL_TCP, TCP_NODELAY, &flag, sizeof(flag)); }
+            enableFastOpen(stream->next_layer());
 
             std::string connectReq = "CONNECT " + host + ":" + port + " HTTP/1.1\r\n"
                                      "Host: " + host + ":" + port + "\r\n"
@@ -511,10 +524,33 @@ DnsMessagePtr HttpResolver::Connection::exchange(const std::vector<uint8_t>& wir
     return reply;
 }
 
-DnsMessagePtr HttpResolver::query(const DnsMessage& req) {
+DnsMessagePtr HttpResolver::query(const DnsMessage& req, bool allowFanOut) {
     PerfMonitor::instance().recordConnUse(countConnected(), connections_.size());
     auto t0 = std::chrono::steady_clock::now();
-    auto result = doPost(req);
+
+    // Circuit breaker: if proxy errors spiked, bypass proxy temporarily
+    if (useProxy_ && tlsCircuitTripped) {
+        auto now = std::chrono::steady_clock::now();
+        if (now - tlsCircuitOpen < std::chrono::seconds(60)) {
+            LOG_DEBUG("Circuit breaker: bypassing proxy for 60s");
+            bool savedUseProxy = useProxy_;
+            useProxy_ = false;
+            auto result = doPost(req, allowFanOut);
+            useProxy_ = savedUseProxy;
+            if (result) {
+                auto dt = std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - t0);
+                PerfMonitor::instance().recordLatency(dt);
+                return result;
+            }
+        } else {
+            tlsCircuitTripped = false;
+            tlsProxyErrors = 0;
+            LOG_INFO("Circuit breaker: re-enabling proxy after cooldown");
+        }
+    }
+
+    auto result = doPost(req, allowFanOut);
     if (!result && !fallback_.empty()) {
         LOG_DEBUG("DoH failed, trying fallback DNS to " + fallback_);
         result = doFallback(req);
@@ -530,6 +566,7 @@ DnsMessagePtr HttpResolver::query(const DnsMessage& req) {
     }
 
     PerfMonitor::instance().recordLatency(dt);
+    PerfMonitor::instance().recordDomainLatency(req.question().qname, dt);
     if (!result) PerfMonitor::instance().recordError();
     return result;
 }
@@ -639,10 +676,14 @@ void HttpResolver::warmUp() {
 }
 
 DnsMessagePtr HttpResolver::doPost(const DnsMessage& req) {
+    return doPost(req, true);
+}
+
+DnsMessagePtr HttpResolver::doPost(const DnsMessage& req, bool allowFanOut) {
     auto wire = req.pack();
 
     int targetConns = AutoTuner::instance().recommendedConnections();
-    bool fanOut = AutoTuner::instance().fanOutEnabled();
+    bool fanOut = AutoTuner::instance().fanOutEnabled() && allowFanOut;
 
     // Grow pool if needed
     ensurePoolSize(static_cast<size_t>(targetConns));
@@ -654,9 +695,10 @@ DnsMessagePtr HttpResolver::doPost(const DnsMessage& req) {
         // parallel failed, fall through to single-connection retry
     }
 
-    // Try connected connections round-robin (fail fast — at most 5 tries)
+    // Try connected connections round-robin with retry + backoff
     int numConns = connections_.size();
-    for (int attempt = 0; attempt < std::min(numConns * 2, 5); ++attempt) {
+    int backoffMs = 10;
+    for (int attempt = 0; attempt < std::min(numConns * 3, 8); ++attempt) {
         int idx = nextConn_.fetch_add(1, std::memory_order_relaxed) % numConns;
         auto& conn = connections_[idx];
         if (!conn->connected.load()) continue;
@@ -666,10 +708,25 @@ DnsMessagePtr HttpResolver::doPost(const DnsMessage& req) {
         if (reply) {
             conn->inUse = false;
             connCtrl_.notifyUsed(conn->stream.get());
+            // Reset circuit breaker on success
+            tlsProxyErrors = 0;
             return reply;
         }
         connCtrl_.notifyFailure(conn->stream.get());
         conn->inUse = false;
+
+        // Circuit breaker: count proxy errors
+        if (useProxy_ && ++tlsProxyErrors > 5) {
+            tlsCircuitTripped = true;
+            tlsCircuitOpen = std::chrono::steady_clock::now();
+            LOG_WARN("Circuit breaker: proxy error spike, bypassing for 60s");
+        }
+
+        // Retry with backoff
+        if (attempt < 4) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(backoffMs));
+            backoffMs *= 2;
+        }
     }
 
     // No connected connections — open just 1 synchronously, rest in background
@@ -698,10 +755,16 @@ DnsMessagePtr HttpResolver::doPost(const DnsMessage& req) {
                 if (!c->connected.load() && c.get() != conn.get())
                     openConnectionAsync(c.get());
             }
+            tlsProxyErrors = 0;
             return reply;
         }
         connCtrl_.notifyFailure(conn->stream.get());
         conn->inUse = false;
+
+        if (useProxy_ && ++tlsProxyErrors > 5) {
+            tlsCircuitTripped = true;
+            tlsCircuitOpen = std::chrono::steady_clock::now();
+        }
         break;
     }
 

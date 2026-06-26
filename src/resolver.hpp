@@ -10,6 +10,6 @@ public:
     virtual ~Resolver() = default;
     virtual void init() {}
     virtual void maintain() {}
-    virtual DnsMessagePtr query(const DnsMessage& req) = 0;
+    virtual DnsMessagePtr query(const DnsMessage& req, bool allowFanOut = true) = 0;
     virtual int countConnected() const { return 0; }
 };

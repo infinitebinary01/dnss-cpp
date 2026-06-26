@@ -21,7 +21,7 @@ public:
 
     void init() override;
     void maintain() override;
-    DnsMessagePtr query(const DnsMessage& req) override;
+    DnsMessagePtr query(const DnsMessage& req, bool allowFanOut = true) override;
 
     int countConnected() const override;
 
@@ -80,6 +80,7 @@ private:
 
     std::thread maintainThread_;
     std::thread refreshThread_;
+    std::thread adaptivePrewarmThread_;
     std::atomic<bool> running_{false};
 
     std::atomic<int64_t> totalQueries_{0};
@@ -88,6 +89,11 @@ private:
     std::atomic<int64_t> cacheRecorded_{0};
     std::atomic<int64_t> preemptiveRefreshes_{0};
     std::atomic<int64_t> turboHits_{0};
+
+    // Adaptive prewarm: track popular domains
+    std::unordered_map<std::string, std::atomic<uint64_t>> prewarmTracker_;
+    std::mutex prewarmMutex_;
+    void doAdaptivePrewarm();
 
     static constexpr size_t maxCacheSize = 2000;
     static constexpr std::chrono::seconds minTTL{30};

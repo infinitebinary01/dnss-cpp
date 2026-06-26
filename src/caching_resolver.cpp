@@ -22,6 +22,7 @@ CachingResolver::~CachingResolver() {
     running_ = false;
     if (maintainThread_.joinable()) maintainThread_.join();
     if (refreshThread_.joinable()) refreshThread_.join();
+    if (adaptivePrewarmThread_.joinable()) adaptivePrewarmThread_.join();
 }
 
 bool CachingResolver::turboLookup(uint64_t h, DnsMessagePtr& out) {
@@ -99,6 +100,19 @@ void CachingResolver::maintain() {
             LOG_ERROR("Cache refresh thread error: " + std::string(e.what()));
         }
     });
+
+    // Adaptive prewarm: every 60s, prewarm top-10 most-queried domains
+    adaptivePrewarmThread_ = std::thread([this]() {
+        try {
+            while (running_) {
+                std::this_thread::sleep_for(std::chrono::seconds(60));
+                if (!running_) break;
+                doAdaptivePrewarm();
+            }
+        } catch (const std::exception& e) {
+            LOG_ERROR("Adaptive prewarm thread error: " + std::string(e.what()));
+        }
+    });
 }
 
 bool CachingResolver::needsRefresh(const CacheEntry& entry) {
@@ -143,15 +157,18 @@ void CachingResolver::refreshEntry(const CacheKey& key, CacheEntry& entry) {
     }
 }
 
-DnsMessagePtr CachingResolver::query(const DnsMessage& req) {
+DnsMessagePtr CachingResolver::query(const DnsMessage& req, bool allowFanOut) {
     totalQueries_++;
 
     if (req.questions.size() != 1)
-        return back_->query(req);
+        return back_->query(req, allowFanOut);
 
     const auto& q = req.questions[0];
     CacheKey key{q.qname, q.qtype, q.qclass};
     uint64_t h = turboHash(key);
+
+    // Track for adaptive prewarm
+    prewarmTracker_[q.qname].fetch_add(1, std::memory_order_relaxed);
 
     // L1 turbo lookup (lock-free fast path)
     {
@@ -178,7 +195,10 @@ DnsMessagePtr CachingResolver::query(const DnsMessage& req) {
 
     cacheMisses_++;
     PerfMonitor::instance().recordCacheMiss();
-    auto reply = back_->query(req);
+
+    // Disable fan-out for cache misses — no benefit racing multiple connections
+    // through a slow proxy; it just doubles the bottleneck
+    auto reply = back_->query(req, false);
     if (!reply) return nullptr;
 
     if (shouldCache(q, *reply)) {
@@ -297,3 +317,43 @@ int64_t CachingResolver::misses() const { return cacheMisses_.load(); }
 int64_t CachingResolver::total() const { return totalQueries_.load(); }
 
 int CachingResolver::countConnected() const { return back_->countConnected(); }
+
+void CachingResolver::doAdaptivePrewarm() {
+    // Collect top queried domains
+    std::vector<std::pair<std::string, uint64_t>> sorted;
+    {
+        std::lock_guard<std::mutex> lock(prewarmMutex_);
+        for (auto& [name, count] : prewarmTracker_) {
+            uint64_t c = count.load(std::memory_order_relaxed);
+            if (c > 0) sorted.push_back({name, c});
+        }
+    }
+    if (sorted.empty()) return;
+
+    std::sort(sorted.begin(), sorted.end(),
+              [](auto& a, auto& b) { return a.second > b.second; });
+
+    int prewarmed = 0;
+    int count = 0;
+    for (auto& [name, _] : sorted) {
+        if (++count > 10) break;
+        // Skip if already in turbo
+        CacheKey key{name, DnsType::A, 1};
+        DnsMessagePtr dummy;
+        if (turboLookup(turboHash(key), dummy)) continue;
+
+        auto q = DnsMessage::createQuery(name, DnsType::A);
+        if (q) {
+            auto reply = back_->query(*q, false);
+            if (reply) {
+                prewarmed++;
+                LOG_DEBUG("Adaptive prewarm: " + name);
+            }
+        }
+    }
+
+    if (prewarmed > 0) {
+        LOG_INFO("Adaptive prewarm: " + std::to_string(prewarmed) +
+                 " domains refreshed");
+    }
+}

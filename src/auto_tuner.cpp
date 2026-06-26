@@ -127,6 +127,7 @@ void AutoTuner::tune() {
     qpsHistory_.push_back({now, qps});
     if (qpsHistory_.size() > MAX_HISTORY)
         qpsHistory_.pop_front();
+    qps_.store(qps);
 
     // Compute trend and variance
     double trend = computeTrend();
@@ -164,10 +165,15 @@ void AutoTuner::tune() {
     int curConn = connCount_.load();
     int newConn = curConn;
 
-    // Utilization-based growth: if pool is nearly full and load is real, scale fast
+    // Pre-emptive growth: if pool is moderately loaded AND trending up, grow before saturation
     double util = perf.connUtilization;
-    if (util > 0.85 && qps > 5 && curConn < MAX_CONNS) {
-        int growth = util > 0.95 ? 2 : 1;
+    if (util > 0.70 && trend > 3 && qps > 5 && curConn < MAX_CONNS) {
+        newConn = std::min(curConn + 2, MAX_CONNS);
+        LOG_DEBUG("AI-Tuner: +2 connections (" +
+                  std::to_string(newConn) + ") — pre-emptive (util=" +
+                  std::to_string(static_cast<int>(util * 100)) + "% trend=" + std::to_string(trend) + ")");
+    } else if (util > 0.85 && qps > 5 && curConn < MAX_CONNS) {
+        int growth = util > 0.95 ? 3 : 2;
         newConn = std::min(curConn + growth, MAX_CONNS);
         LOG_DEBUG("AI-Tuner: +" + std::to_string(growth) + " connections (" +
                   std::to_string(newConn) + ") — utilization " +

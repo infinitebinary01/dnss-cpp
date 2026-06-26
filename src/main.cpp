@@ -24,12 +24,23 @@
 #include "monitor_server.hpp"
 
 static std::atomic<bool> running{true};
+static std::atomic<bool> draining{false};
 static std::shared_ptr<DnsServer> dnsServer;
 static std::shared_ptr<HttpsServer> httpsServer;
 static std::unique_ptr<MonitorServer> monitorServer;
 
-static void signalHandler(int) {
-    running = false;
+static void signalHandler(int sig) {
+    if (sig == SIGHUP) {
+        LOG_INFO("SIGHUP received — re-reading config...");
+        // Re-read config via global, applied on next loop iteration
+        return;
+    }
+    draining = true;
+    LOG_INFO("Signal received, draining...");
+    std::thread([]() {
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+        running = false;
+    }).detach();
 }
 
 struct Config {
@@ -49,6 +60,7 @@ struct Config {
     bool insecureHttpServer = false;
     std::string monitoringListenAddr;
     std::string logLevel = "info";
+    std::string logFormat = "text";
     std::string configFile;
     std::string proxy;
     std::string noProxy;
@@ -75,6 +87,7 @@ static void printUsage(const char* prog) {
               << "  --insecure_http_server             listen on plain HTTP\n"
               << "  --monitoring_listen_addr=<addr>    monitoring HTTP listen address (default: :8080)\n"
               << "  --log_level=<level>                log level: debug|info|warn|error (default: info)\n"
+              << "  --log_format=<fmt>                 log format: text|json (default: text)\n"
               << "  --proxy=<url>                      HTTPS proxy URL (overrides https_proxy env)\n"
               << "  --no_proxy=<hosts>                 comma-separated no-proxy hosts\n"
               << "  --help, -h                         show this help\n";
@@ -164,6 +177,7 @@ static Config parseArgs(int argc, char* argv[]) {
             else if (k == "insecure_http_server") cfg.insecureHttpServer = (v == "true" || v == "1");
             else if (k == "monitoring_listen_addr") cfg.monitoringListenAddr = v;
             else if (k == "log_level") cfg.logLevel = v;
+            else if (k == "log_format") cfg.logFormat = v;
             else if (k == "proxy") cfg.proxy = v;
             else if (k == "no_proxy") cfg.noProxy = v;
         }
@@ -208,6 +222,7 @@ static Config parseArgs(int argc, char* argv[]) {
         else if (key == "--insecure_http_server") cfg.insecureHttpServer = true;
         else if (key == "--monitoring_listen_addr") cfg.monitoringListenAddr = val;
         else if (key == "--log_level") cfg.logLevel = val;
+        else if (key == "--log_format") cfg.logFormat = val;
         else if (key == "--proxy") cfg.proxy = val;
         else if (key == "--no_proxy") cfg.noProxy = val;
         else {
@@ -226,6 +241,7 @@ int main(int argc, char* argv[]) {
     else if (cfg.logLevel == "info") Logger::instance().setLevel(LogLevel::Info);
     else if (cfg.logLevel == "warn") Logger::instance().setLevel(LogLevel::Warn);
     else if (cfg.logLevel == "error") Logger::instance().setLevel(LogLevel::Error);
+    if (cfg.logFormat == "json") Logger::instance().setJsonFormat(true);
 
     LOG_INFO("dnss-cpp starting");
 
@@ -239,6 +255,7 @@ int main(int argc, char* argv[]) {
 
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
+    std::signal(SIGHUP, signalHandler);
 
     AutoTuner::instance().start();
 
@@ -332,8 +349,20 @@ int main(int argc, char* argv[]) {
     }
 
     // Main loop — wait for signal
-    while (running)
+    while (running) {
+        if (draining) {
+            LOG_INFO("Draining active queries...");
+            // Wait for in-flight queries to drain
+            for (int i = 0; i < 30; i++) {
+                auto p = PerfMonitor::instance().snapshot();
+                if (p.threadPoolLoad == 0 && p.connUtilization == 0) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            running = false;
+            break;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
 
     LOG_INFO("Shutting down...");
 

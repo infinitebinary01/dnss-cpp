@@ -165,38 +165,60 @@ void DnsServer::stop() {
     udpSocket_.close(ec);
     ioCtx_.stop();
     dnsPool().shutdown();
+
+    for (auto& t : workerThreads_)
+        if (t.joinable()) t.join();
 }
 
 void DnsServer::listenAndServe() {
     try {
     resolver_->init();
 
-    LOG_INFO("DNS server listening on " + addr_ + " (UDP/TCP)");
-
     auto colon = addr_.find(':');
     std::string host = (colon != std::string::npos && colon > 0) ? addr_.substr(0, colon) : "";
     std::string port = (colon != std::string::npos) ? addr_.substr(colon + 1) : "53";
     if (host.empty()) host = "0.0.0.0";
+    uint16_t portNum = static_cast<uint16_t>(std::stoi(port));
 
     sys::error_code ec;
 
-    asio::ip::udp::endpoint udpEndpoint(asio::ip::make_address(host), std::stoi(port));
+    // Main UDP socket (worker 0)
+    asio::ip::udp::endpoint udpEndpoint(asio::ip::make_address(host), portNum);
     udpSocket_.open(udpEndpoint.protocol(), ec);
     if (ec) { LOG_ERROR("Failed to open UDP socket: " + ec.message()); return; }
     udpSocket_.set_option(asio::socket_base::reuse_address(true), ec);
-    if (ec) { LOG_WARN("Failed to set UDP reuse_address: " + ec.message()); }
+
+    // SO_REUSEPORT for all workers
+    {
+        int reuse = 1;
+        setsockopt(udpSocket_.native_handle(), SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse));
+    }
+
     udpSocket_.bind(udpEndpoint, ec);
     if (ec) { LOG_ERROR("Failed to bind UDP: " + ec.message()); return; }
 
     resolver_->maintain();
-    startUdpReceive();
 
-    tcp::endpoint tcpEndpoint(asio::ip::make_address(host), std::stoi(port));
+    // Start multi-worker UDP listeners (SO_REUSEPORT allows multiple sockets on same port)
+    LOG_INFO("DNS server listening on " + addr_ + " with " +
+             std::to_string(NUM_WORKERS) + " UDP workers");
+
+    for (int i = 0; i < NUM_WORKERS; ++i) {
+        workerThreads_.emplace_back([this, i, host, portNum]() {
+            udpWorker(i, portNum);
+        });
+    }
+
+    tcp::endpoint tcpEndpoint(asio::ip::make_address(host), portNum);
     tcpAcceptor_.open(tcpEndpoint.protocol(), ec);
     if (ec) { LOG_ERROR("Failed to open TCP acceptor: " + ec.message()); }
     if (!ec) {
         tcpAcceptor_.set_option(asio::socket_base::reuse_address(true), ec);
         if (ec) { LOG_WARN("Failed to set TCP reuse_address: " + ec.message()); ec.clear(); }
+
+        int reuse = 1;
+        setsockopt(tcpAcceptor_.native_handle(), SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse));
+
         tcpAcceptor_.bind(tcpEndpoint, ec);
         if (ec) { LOG_WARN("Failed to bind TCP (" + ec.message() + ") — UDP only"); }
     }
@@ -227,7 +249,10 @@ void DnsServer::listenAndServe() {
                     auto msg = DnsMessage::parse(buf.data(), len);
                     if (!msg || !msg->hasQuestions()) return;
                     auto reply = r->query(*msg);
-                    if (!reply) reply = DnsMessage::createError(*msg, DnsRcode::ServFail);
+                    if (!reply) {
+                        reply = DnsMessage::createError(*msg, DnsRcode::ServFail);
+                        if (reply) PerfMonitor::instance().recordError();
+                    }
                     auto wire = reply->pack();
                     uint16_t resp_len = htons(wire.size());
                     std::vector<asio::const_buffer> bufs;
@@ -256,12 +281,69 @@ void DnsServer::listenAndServe() {
     });
     perfThread.detach();
 
+    // Main thread runs io_ctx for TCP accept
     ioCtx_.run();
     LOG_DEBUG("DNS io_context stopped");
     } catch (const std::exception& e) {
         LOG_ERROR("Fatal error in DNS server: " + std::string(e.what()));
     } catch (...) {
         LOG_ERROR("Fatal error in DNS server: unknown (not std::exception)");
+    }
+}
+
+void DnsServer::udpWorker(int id, uint16_t port) {
+    try {
+        // Each worker opens its own UDP socket with SO_REUSEPORT
+        asio::io_context workerCtx;
+        asio::ip::udp::socket workerSocket(workerCtx);
+        asio::ip::udp::endpoint ep(asio::ip::udp::v4(), port);
+
+        sys::error_code ec;
+        workerSocket.open(ep.protocol(), ec);
+        if (ec) { LOG_ERROR("Worker " + std::to_string(id) + " open: " + ec.message()); return; }
+
+        workerSocket.set_option(asio::socket_base::reuse_address(true), ec);
+        int reuse = 1;
+        setsockopt(workerSocket.native_handle(), SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse));
+        workerSocket.bind(ep, ec);
+        if (ec) { LOG_ERROR("Worker " + std::to_string(id) + " bind: " + ec.message()); return; }
+
+        LOG_DEBUG("UDP worker " + std::to_string(id) + " started on port " + std::to_string(port));
+
+        std::array<uint8_t, 4096> recvBuf;
+        asio::ip::udp::endpoint remoteEp;
+
+        while (running_) {
+            size_t len;
+            {
+                sys::error_code recvEc;
+                len = workerSocket.receive_from(asio::buffer(recvBuf), remoteEp, 0, recvEc);
+                if (recvEc) {
+                    if (running_) LOG_ERROR("Worker " + std::to_string(id) + " recv: " + recvEc.message());
+                    continue;
+                }
+                if (len < 12) continue;
+            }
+
+            auto clientIp = remoteEp.address().to_string();
+            if (!rateLimiter.allow(clientIp)) {
+                LOG_WARN("Rate limit exceeded for " + clientIp);
+                continue;
+            }
+
+            // Handle the query
+            auto data = std::make_shared<std::vector<uint8_t>>(recvBuf.begin(), recvBuf.begin() + len);
+            auto remote = remoteEp;
+            auto res = resolver_;
+            auto over = overrides_;
+            auto unq = unqUpstream_;
+
+            dnsPool().enqueue([this, data, remote, res, over, unq]() {
+                handleQuery(data->data(), data->size(), remote, res, over, unq);
+            });
+        }
+    } catch (const std::exception& e) {
+        if (running_) LOG_ERROR("UDP worker " + std::to_string(id) + " error: " + std::string(e.what()));
     }
 }
 
@@ -311,7 +393,14 @@ void DnsServer::handleQuery(const uint8_t* data, size_t len,
         if (!req || !req->hasQuestions()) return;
 
         const auto& q = req->question();
-        LOG_DEBUG("UDP query: " + q.qname + " (" + std::to_string(q.qtype) +
+
+        // Per-query trace ID
+        auto traceId = std::to_string(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count() % 100000) + "-" +
+            q.qname.substr(0, std::min(q.qname.size(), size_t(16)));
+
+        LOG_DEBUG("[" + traceId + "] query " + q.qname + " (" + std::to_string(q.qtype) +
                   ") from " + remote.address().to_string());
 
         DnsMessagePtr reply;
@@ -335,9 +424,11 @@ void DnsServer::handleQuery(const uint8_t* data, size_t len,
                 reply = DnsMessage::parse(respBuf.data(), n);
                 if (reply) reply->header.id = req->header.id;
             } catch (const std::exception& e) {
-                LOG_ERROR("Override error: " + std::string(e.what()));
+                LOG_ERROR("[" + traceId + "] Override error: " + std::string(e.what()));
                 reply = DnsMessage::createError(*req, DnsRcode::ServFail);
+                if (reply) PerfMonitor::instance().recordError();
             }
+            LOG_DEBUG("[" + traceId + "] override -> " + overrideAddr);
         } else if (!unqUpstream.empty()) {
             auto dot = q.qname.find('.');
             auto nextDot = (dot != std::string::npos) ? q.qname.find('.', dot + 1) : std::string::npos;
@@ -360,8 +451,9 @@ void DnsServer::handleQuery(const uint8_t* data, size_t len,
                     reply = DnsMessage::parse(respBuf.data(), n);
                     if (reply) reply->header.id = req->header.id;
                 } catch (const std::exception& e) {
-                    LOG_ERROR("Unqualified upstream error: " + std::string(e.what()));
+                    LOG_ERROR("[" + traceId + "] Unqualified upstream error: " + std::string(e.what()));
                     reply = DnsMessage::createError(*req, DnsRcode::ServFail);
+                    if (reply) PerfMonitor::instance().recordError();
                 }
             } else {
                 reply = resolver->query(*req);
@@ -370,8 +462,10 @@ void DnsServer::handleQuery(const uint8_t* data, size_t len,
             reply = resolver->query(*req);
         }
 
-        if (!reply)
+        if (!reply) {
             reply = DnsMessage::createError(*req, DnsRcode::ServFail);
+            if (reply) PerfMonitor::instance().recordError();
+        }
 
         auto wire = reply->pack();
         // Non-blocking async send — no mutex contention

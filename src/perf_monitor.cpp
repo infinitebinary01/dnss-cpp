@@ -3,6 +3,7 @@
 #include "perf_monitor.hpp"
 #include <algorithm>
 #include <cmath>
+#include <deque>
 
 PerfMonitor& PerfMonitor::instance() {
     static PerfMonitor inst;
@@ -13,6 +14,36 @@ void PerfMonitor::recordLatency(std::chrono::microseconds us) {
     auto idx = latencyRing_.writeIdx_.fetch_add(1, std::memory_order_relaxed);
     latencyRing_.latencies_[idx % WINDOW_SIZE].store(us.count(), std::memory_order_relaxed);
     counters_.queries_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void PerfMonitor::recordDomainLatency(const std::string& domain, std::chrono::microseconds us) {
+    // Extract base domain (up to 2 labels)
+    auto dot = domain.rfind('.');
+    if (dot == std::string::npos || dot == 0) return;
+    auto prevDot = domain.rfind('.', dot - 1);
+    std::string base = (prevDot != std::string::npos && prevDot > 0)
+        ? domain.substr(prevDot + 1) : domain;
+    // Remove trailing dot
+    while (!base.empty() && base.back() == '.') base.pop_back();
+    if (base.empty()) return;
+
+    std::lock_guard<std::mutex> lock(domainMutex_);
+    auto& dl = domainLatencies_[base];
+    // Simple EWMA
+    if (dl.count == 0) {
+        dl.avg = us.count() / 1000.0;
+        dl.p95 = dl.avg;
+    } else {
+        dl.avg = dl.avg * 0.95 + (us.count() / 1000.0) * 0.05;
+        // Track P95 as max of recent samples (simplified)
+        dl.p95 = std::max(dl.p95 * 0.9, (us.count() / 1000.0) * 0.1);
+    }
+    dl.count++;
+}
+
+std::unordered_map<std::string, PerfMonitor::DomainLatency> PerfMonitor::getDomainLatencies() const {
+    std::lock_guard<std::mutex> lock(domainMutex_);
+    return domainLatencies_;
 }
 
 void PerfMonitor::recordCacheHit() {

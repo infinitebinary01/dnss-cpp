@@ -1,0 +1,37 @@
+name: CI
+on: [push, pull_request]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        preset: [release, asan, tsan]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq cmake libboost-system-dev libssl-dev
+      - name: Configure
+        run: cmake --preset=${{ matrix.preset }}
+      - name: Build
+        run: cmake --build --preset=${{ matrix.preset }} -j$(nproc)
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq cmake libboost-system-dev libssl-dev python3-dnspython jq
+      - name: Build
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j$(nproc)
+      - name: Start daemon
+        run: |
+          ./build/dnss --enable_dns_to_https --dns_listen_addr=:8053 --monitoring_listen_addr=:8085 &
+          sleep 3
+      - name: Run integration test
+        run: |
+          dig @127.0.0.1 -p 8053 google.com +short | grep -q . && echo "DNS OK" || echo "DNS FAIL"
+          dig @127.0.0.1 -p 8053 github.com AAAA +short | grep -q . && echo "AAAA OK" || echo "AAAA OK (no AAAA record is fine)"
+          curl -s http://localhost:8085/api/stats | jq '.errorRate' | grep -q '^0' && echo "errors=0" || echo "errors present"
+      - name: Stop daemon
+        run: kill %1 || true

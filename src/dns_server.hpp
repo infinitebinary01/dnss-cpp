@@ -6,10 +6,13 @@
 #include <memory>
 #include <mutex>
 #include <atomic>
+#include <vector>
 #include <boost/asio.hpp>
 #include "dns_protocol.hpp"
 #include "resolver.hpp"
 #include "domain_map.hpp"
+
+#include <sys/socket.h>
 
 namespace asio = boost::asio;
 namespace sys = boost::system;
@@ -48,4 +51,9 @@ private:
     asio::ip::udp::endpoint remoteEndpoint_;
 
     std::atomic<bool> running_{true};
+
+    // SO_REUSEPORT + multi-worker
+    static constexpr int NUM_WORKERS = 2;
+    std::vector<std::thread> workerThreads_;
+    void udpWorker(int id, uint16_t port);
 };

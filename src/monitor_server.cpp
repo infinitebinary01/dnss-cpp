@@ -170,86 +170,148 @@ std::string MonitorServer::renderDashboard() {
     return R"foo(<!DOCTYPE html>
 <html>
 <head>
-<title>dnss-cpp Monitor</title>
+<title>dnss-cpp v0.2 — Nexus</title>
 <meta charset='utf-8'>
 <style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
 *{margin:0;padding:0;box-sizing:border-box;}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f7fa;color:#2c3e50;padding:30px;}
-h1{font-size:24px;font-weight:600;color:#1a73e8;margin-bottom:4px;}
-.subtitle{color:#5f6368;font-size:13px;margin-bottom:24px;}
-.cards{display:flex;flex-wrap:wrap;gap:16px;margin-bottom:24px;}
-.card{background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 3px rgba(0,0,0,0.08);flex:1;min-width:200px;border:1px solid #e8eaed;}
-.card h2{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:#5f6368;margin-bottom:12px;}
-.card table{width:100%;border-collapse:collapse;}
-.card td{padding:5px 0;font-size:13px;}
-.card td:first-child{color:#5f6368;}
-.card td:last-child{font-weight:600;text-align:right;font-variant-numeric:tabular-nums;}
-.good{color:#188038!important;}
-.warn{color:#ea8600!important;}
-.bad{color:#d93025!important;}
-.footer{margin-top:32px;padding-top:16px;border-top:1px solid #e8eaed;font-size:13px;color:#5f6368;}
-.footer a{color:#1a73e8;text-decoration:none;margin-right:16px;}
-.footer a:hover{text-decoration:underline;}
+body{font-family:'JetBrains Mono',monospace;background:#1a1d23;color:#b3b1ad;padding:20px;overflow-x:hidden;min-height:100vh;}
+/* Matrix rain canvas */
+#matrix{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;pointer-events:none;opacity:0.05;}
+.container{position:relative;z-index:1;max-width:1200px;margin:0 auto;}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;padding:12px 16px;border:1px solid #2a2d35;background:rgba(26,29,35,0.9);}
+.header h1{font-size:18px;font-weight:700;color:#00ff41;text-shadow:0 0 10px rgba(0,255,65,0.3);}
+.header h1::before{content:'> ';color:#0ae;}.header .ts{color:#5c6370;font-size:12px;}
+.header .ts span{color:#00ff41;}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:16px;}
+.card{background:rgba(30,33,40,0.9);border:1px solid #2a2d35;padding:14px 16px;position:relative;overflow:hidden;}
+.card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,#0ae,transparent);}
+.card h2{font-size:10px;font-weight:700;color:#5c6370;text-transform:uppercase;letter-spacing:2px;margin-bottom:10px;}
+.card h2::after{content:' []';color:#00ff41;font-size:8px;}
+.stat-row{display:flex;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:1px solid rgba(26,31,41,0.5);}
+.stat-row:last-child{border-bottom:none;}
+.stat-label{color:#5c6370;}.stat-value{font-weight:700;font-variant-numeric:tabular-nums;}
+.good{color:#00ff41;text-shadow:0 0 6px rgba(0,255,65,0.3);}
+.warn{color:#e6db74;text-shadow:0 0 6px rgba(230,219,116,0.2);}
+.bad{color:#ff5555;text-shadow:0 0 6px rgba(255,85,85,0.3);}
+.cyan{color:#0ae;text-shadow:0 0 6px rgba(0,170,238,0.2);}
+.magenta{color:#ff79c6;text-shadow:0 0 6px rgba(255,121,198,0.2);}
+/* Bar charts */
+.bar-track{background:#1a1f29;height:4px;border-radius:2px;margin:6px 0;overflow:hidden;}
+.bar-fill{height:100%;border-radius:2px;transition:width 0.5s ease;}
+.bar-good{background:#00ff41;}.bar-warn{background:#e6db74;}.bar-bad{background:#ff5555;}.bar-cyan{background:#0ae;}
+.bottom-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;}
+.footer{margin-top:16px;padding:10px 16px;border:1px solid #2a2d35;font-size:11px;color:#5c6370;background:rgba(30,33,40,0.9);}
+.footer a{color:#0ae;text-decoration:none;margin-right:20px;}.footer a:hover{text-shadow:0 0 8px rgba(0,170,238,0.5);}
+/* Sparklines */
+.sparkline{display:flex;align-items:flex-end;gap:2px;height:30px;padding:4px 0;}
+.sparkline .bar{width:6px;border-radius:1px;transition:height 0.3s ease;min-height:2px;}
 </style>
 </head>
 <body>
-<h1>dnss-cpp Monitor</h1>
-<p class='subtitle'>Last updated: <span id='ts'>-</span></p>
+<canvas id='matrix'></canvas>
+<div class='container'>
+<div class='header'>
+<h1>dnss-cpp nexus</h1>
+<div class='ts'>SYS::UPTIME <span id='ts'>--:--:--</span></div>
+</div>
 
-<div class='cards'>
+<div class='grid'>
 <div class='card'>
-<h2>Latency</h2>
-<table>
-<tr><td>Avg</td><td id='lat-avg' class='good'>-</td></tr>
-<tr><td>P95</td><td id='lat-p95' class='good'>-</td></tr>
-<tr><td>Errors</td><td id='err-rate' class='good'>-</td></tr>
-</table>
+<h2>LATENCY</h2>
+<div class='stat-row'><span class='stat-label'>AVG</span><span class='stat-value good' id='lat-avg'>--</span></div>
+<div class='stat-row'><span class='stat-label'>P95</span><span class='stat-value' id='lat-p95'>--</span></div>
+<div class='stat-row'><span class='stat-label'>ERRORS</span><span class='stat-value good' id='err-rate'>--</span></div>
+<div class='stat-row'><span class='stat-label'>QPS</span><span class='stat-value cyan' id='qps'>--</span></div>
 </div>
 
 <div class='card'>
-<h2>Cache &mdash; Dual Tier</h2>
-<table>
-<tr><td>L1 Turbo</td><td id='turbo-hit' class='good'>-</td></tr>
-<tr><td>L2 Main</td><td id='l2-hit'>-</td></tr>
-<tr><td>Total Hit</td><td id='cache-hit'>-</td></tr>
-<tr><td>Refresh</td><td id='cache-refresh'>-</td></tr>
-</table>
+<h2>CACHE TIERS</h2>
+<div class='stat-row'><span class='stat-label'>L1 TURBO</span><span class='stat-value good' id='turbo-hit'>--</span></div>
+<div class='stat-row'><span class='stat-label'>L2 MAIN</span><span class='stat-value' id='l2-hit'>--</span></div>
+<div class='stat-row'><span class='stat-label'>TOTAL HIT</span><span class='stat-value' id='cache-hit'>--</span></div>
+<div class='stat-row'><span class='stat-label'>REFRESH</span><span class='stat-value cyan' id='cache-refresh'>--</span></div>
 </div>
 
 <div class='card'>
-<h2>Connections</h2>
-<table>
-<tr><td>Active</td><td id='conn-active'>-</td></tr>
-<tr><td>Utilization</td><td id='conn-util'>-</td></tr>
-</table>
+<h2>CONNECTIONS</h2>
+<div class='stat-row'><span class='stat-label'>ACTIVE</span><span class='stat-value' id='conn-active'>--</span></div>
+<div class='stat-row'><span class='stat-label'>UTILIZATION</span><span class='stat-value good' id='conn-util'>--</span></div>
+<div class='bar-track'><div class='bar-fill bar-good' id='conn-bar' style='width:0%'></div></div>
+<div class='stat-row' style='margin-top:4px'><span class='stat-label'>TUNER GROWTH</span><span class='stat-value cyan' id='tuner-growth'>--</span></div>
 </div>
 
 <div class='card'>
-<h2>Thread Pool</h2>
-<table>
-<tr><td>Pending</td><td id='pool-pending'>-</td></tr>
-<tr><td>Allocated</td><td id='pool-threads'>-</td></tr>
-</table>
+<h2>THREAD POOL</h2>
+<div class='stat-row'><span class='stat-label'>PENDING</span><span class='stat-value' id='pool-pending'>--</span></div>
+<div class='stat-row'><span class='stat-label'>ALLOCATED</span><span class='stat-value cyan' id='pool-threads'>--</span></div>
+<div class='bar-track'><div class='bar-fill bar-cyan' id='pool-bar' style='width:0%'></div></div>
 </div>
 
 <div class='card'>
-<h2>Auto-Tuner</h2>
-<table>
-<tr><td>Connections</td><td id='tuner-conn'>-</td></tr>
-<tr><td>Threads</td><td id='tuner-threads'>-</td></tr>
-<tr><td>Refresh</td><td id='tuner-refresh'>-</td></tr>
-<tr><td>Fan-Out</td><td id='tuner-fanout'>-</td></tr>
-</table>
+<h2>AUTO-TUNER</h2>
+<div class='stat-row'><span class='stat-label'>CONNS</span><span class='stat-value' id='tuner-conn'>--</span></div>
+<div class='stat-row'><span class='stat-label'>THREADS</span><span class='stat-value' id='tuner-threads'>--</span></div>
+<div class='stat-row'><span class='stat-label'>REFRESH</span><span class='stat-value' id='tuner-refresh'>--</span></div>
+<div class='stat-row'><span class='stat-label'>FAN-OUT</span><span class='stat-value' id='tuner-fanout'>--</span></div>
+<div class='stat-row'><span class='stat-label'>LAT TREND</span><span class='stat-value' id='tuner-trend'>--</span></div>
+</div>
+
+<div class='card' style='grid-column:span 2'>
+<h2>PREDICTED LATENCY &mdash; 60s WINDOW</h2>
+<div class='sparkline' id='latency-spark'></div>
+</div>
+</div>
+
+<div class='bottom-row'>
+<div class='card'>
+<h2>TOP DOMAINS BY LATENCY</h2>
+<div id='top-domains'><div class='stat-row'><span class='stat-label'>collecting...</span><span class='stat-value'>--</span></div></div>
+</div>
+<div class='card'>
+<h2>SYSTEM</h2>
+<div class='stat-row'><span class='stat-label'>UPTIME</span><span class='stat-value good' id='sys-uptime'>--</span></div>
+<div class='stat-row'><span class='stat-label'>TOTAL QUERIES</span><span class='stat-value cyan' id='sys-queries'>--</span></div>
+<div class='stat-row'><span class='stat-label'>UDP WORKERS</span><span class='stat-value' id='sys-workers'>2</span></div>
+<div class='stat-row'><span class='stat-label'>TCP</span><span class='stat-value' id='sys-tcp'>--</span></div>
+<div class='stat-row'><span class='stat-label'>MODE</span><span class='stat-value good'>PROXY</span></div>
 </div>
 </div>
 
 <div class='footer'>
-<a href='/metrics'>Prometheus Metrics</a>
-<a href='/api/stats'>JSON API</a>
-<a href='/health'>Health Check</a>
+<a href='/metrics'>[ PROMETHEUS ]</a>
+<a href='/api/stats'>[ JSON ]</a>
+<a href='/health'>[ HEALTH ]</a>
+<a href='https://github.com/infinitebinary01/dnss-cpp'>[ GITHUB ]</a>
+<span style='float:right'>dnss-cpp v0.2 &mdash; DNS over HTTPS Nexus</span>
+</div>
 </div>
 
 <script>
+// Matrix rain
+var canvas = document.getElementById('matrix');
+var ctx = canvas.getContext('2d');
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+var cols = Math.floor(canvas.width / 14);
+var drops = Array(cols).fill(1);
+var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<>/{}[]|~';
+function drawMatrix() {
+  ctx.fillStyle = 'rgba(26,29,35,0.07)';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle = '#00ff41';
+  ctx.font = '14px monospace';
+  for(var i=0;i<drops.length;i++){
+    var text = chars[Math.floor(Math.random()*chars.length)];
+    ctx.fillText(text,i*14,drops[i]*14);
+    if(drops[i]*14>canvas.height && Math.random()>0.975) drops[i]=0;
+    drops[i]++;
+  }
+}
+setInterval(drawMatrix,50);
+
+// Latency sparkline history (60 points)
+var latHistory = [];
 function update() {
   var r = new XMLHttpRequest();
   r.onload = function() {
@@ -258,51 +320,99 @@ function update() {
     var ts = new Date().toISOString().slice(11,19);
     function q(id) { return document.getElementById(id); }
     function cls(id, c) { q(id).className = c; }
-    function v(id, val) { q(id).textContent = val; }
 
-    v('ts', ts);
-
+    q('ts').textContent = ts;
     var avg = d.latency.avg_ms, p95 = d.latency.p95_ms;
     var er = d.errors.rate, hr = d.cache.hit_rate, thr = d.cache.turbo_hit_rate;
+
+    // Latency
+    q('lat-avg').textContent = (avg < 1 ? avg.toFixed(2) : avg.toFixed(1)) + 'ms';
+    cls('lat-avg', avg < 100 ? 'good' : avg < 500 ? 'warn' : 'bad');
+    q('lat-p95').textContent = (p95 < 1 ? p95.toFixed(2) : p95.toFixed(1)) + 'ms';
+    cls('lat-p95', p95 < 200 ? 'good' : p95 < 1000 ? 'warn' : 'bad');
+    q('err-rate').textContent = (er*100).toFixed(2) + '%';
+    cls('err-rate', er < 0.03 ? 'good' : 'bad');
+
+    // Cache
+    var l2r = Math.max(0, hr - thr);
+    q('cache-hit').textContent = (hr*100).toFixed(1) + '%';
+    cls('cache-hit', hr > 0.5 ? 'good' : 'warn');
+    q('turbo-hit').textContent = (thr*100).toFixed(1) + '%';
+    cls('turbo-hit', thr > 0.3 ? 'good' : 'warn');
+    q('l2-hit').textContent = (l2r*100).toFixed(1) + '%';
+    cls('l2-hit', l2r > 0.3 ? 'good' : 'warn');
+
+    // Connections
     var active = d.connections.active, total = d.connections.recommended;
     var util = d.connections.utilization;
+    q('conn-active').textContent = active + ' / ' + total;
+    q('conn-util').textContent = (util*100).toFixed(1) + '%';
+    var connBar = q('conn-bar');
+    connBar.style.width = Math.min(util*100,100) + '%';
+    connBar.className = 'bar-fill ' + (util < 0.7 ? 'bar-good' : util < 0.9 ? 'bar-warn' : 'bar-bad');
+
+    // Thread pool
     var pending = d.thread_pool.pending, threads = d.thread_pool.recommended;
+    q('pool-pending').textContent = pending;
+    q('pool-threads').textContent = threads;
+    var poolLoad = Math.min(pending / (threads||1), 1);
+    q('pool-bar').style.width = (poolLoad*100) + '%';
+
+    // Auto-tuner
+    q('tuner-conn').textContent = total;
+    q('tuner-threads').textContent = threads;
     var refresh = d.auto_tuner.cache_refresh_pct;
-    var fanout = d.auto_tuner.fan_out;
+    q('tuner-refresh').textContent = refresh + '%';
+    q('tuner-fanout').textContent = d.auto_tuner.fan_out ? 'ON' : 'OFF';
+    cls('tuner-fanout', d.auto_tuner.fan_out ? 'good' : 'warn');
 
-    v('lat-avg', avg.toFixed(1) + ' ms');
-    cls('lat-avg', avg < 100 ? 'good' : avg < 500 ? 'warn' : 'bad');
-    v('lat-p95', p95.toFixed(1) + ' ms');
-    cls('lat-p95', p95 < 200 ? 'good' : p95 < 1000 ? 'warn' : 'bad');
-    v('err-rate', (er*100).toFixed(2) + '%');
-    cls('err-rate', er < 0.05 ? 'good' : 'bad');
+    // Trend from predicted if available
+    if (d.auto_tuner.latency_trend !== undefined) {
+      q('tuner-trend').textContent = d.auto_tuner.latency_trend.toFixed(1);
+      cls('tuner-trend', d.auto_tuner.latency_trend < 5 ? 'good' : 'warn');
+    }
 
-    var l2r = Math.max(0, hr - thr);
-    v('cache-hit', (hr*100).toFixed(1) + '%');
-    cls('cache-hit', hr > 0.5 ? 'good' : 'warn');
-    v('turbo-hit', (thr*100).toFixed(1) + '%');
-    cls('turbo-hit', thr > 0.3 ? 'good' : 'warn');
-    v('l2-hit', (l2r*100).toFixed(1) + '%');
-    cls('l2-hit', l2r > 0.3 ? 'good' : 'warn');
-    v('cache-refresh', refresh + '%');
+    // QPS
+    q('qps').textContent = d.auto_tuner.qps !== undefined ? d.auto_tuner.qps.toFixed(1) + '/s' : '--';
+    q('tuner-growth').textContent = d.auto_tuner.connection_growth !== undefined ? '+' + d.auto_tuner.connection_growth_per_cycle + '/cycle' : '--';
 
-    v('conn-active', active + ' / ' + total);
-    v('conn-util', (util*100).toFixed(1) + '%');
-    v('pool-pending', pending);
-    v('pool-threads', threads);
+    // System
+    q('sys-queries').textContent = d.auto_tuner.total_queries !== undefined ? d.auto_tuner.total_queries.toLocaleString() : '--';
 
-    v('tuner-conn', total);
-    v('tuner-threads', threads);
-    v('tuner-refresh', refresh + '%');
-    v('tuner-fanout', fanout ? 'enabled' : 'disabled');
+    // Sparkline
+    latHistory.push(avg);
+    if(latHistory.length>60) latHistory.shift();
+    var spark = q('latency-spark');
+    var maxLat = Math.max(1, ...latHistory);
+    spark.innerHTML = latHistory.map(function(v){
+      var pct = Math.max(3,(v/maxLat)*100);
+      var c = v < 100 ? '#00ff41' : v < 500 ? '#e6db74' : '#ff5555';
+      return '<div class="bar" style="height:'+pct+'%;background:'+c+'"></div>';
+    }).join('');
 
+    // Top domains
+    if (d.top_domains && d.top_domains.length) {
+      var dd = q('top-domains');
+      dd.innerHTML = d.top_domains.slice(0,5).map(function(item){
+        var c = item.latency < 100 ? 'good' : item.latency < 500 ? 'warn' : 'bad';
+        return '<div class="stat-row"><span class="stat-label">' + item.domain + '</span><span class="stat-value ' + c + '">' + item.latency.toFixed(1) + 'ms</span></div>';
+      }).join('');
+    }
 
+    // Uptime: compute from start time
+    if (!this._start) this._start = Date.now();
+    var elapsed = Math.floor((Date.now() - this._start)/1000);
+    var h = String(Math.floor(elapsed/3600)).padStart(2,'0');
+    var m = String(Math.floor((elapsed%3600)/60)).padStart(2,'0');
+    var s = String(elapsed%60).padStart(2,'0');
+    q('sys-uptime').textContent = h+':'+m+':'+s;
   };
   r.open('GET', '/api/stats', true);
   r.send();
 }
 update();
 setInterval(update, 2000);
+window.addEventListener('resize',function(){canvas.width=window.innerWidth;canvas.height=window.innerHeight;cols=Math.floor(canvas.width/14);});
 </script>
 </body>
 </html>)foo";
@@ -361,7 +471,7 @@ std::string MonitorServer::renderJson() {
          << "    \"avg_ms\": " << perf.avgLatencyMs << ",\n"
          << "    \"p95_ms\": " << perf.p95LatencyMs << "\n"
          << "  },\n"
-          << "  \"cache\": {\n"
+         << "  \"cache\": {\n"
          << "    \"hit_rate\": " << perf.cacheHitRate << ",\n"
          << "    \"turbo_hit_rate\": " << perf.turboHitRate << "\n"
          << "  },\n"
@@ -379,8 +489,33 @@ std::string MonitorServer::renderJson() {
          << "  },\n"
          << "  \"auto_tuner\": {\n"
          << "    \"cache_refresh_pct\": " << tuner.cacheRefreshThresholdPct() << ",\n"
-         << "    \"fan_out\": " << (tuner.fanOutEnabled() ? "true" : "false") << "\n"
-         << "  }\n"
+         << "    \"fan_out\": " << (tuner.fanOutEnabled() ? "true" : "false") << ",\n"
+         << "    \"latency_trend\": " << tuner.trendSlope() << ",\n"
+         << "    \"qps\": " << tuner.currentQps() << ",\n"
+         << "    \"connection_growth\": 0,\n"
+         << "    \"connection_growth_per_cycle\": 0,\n"
+         << "    \"total_queries\": " << PerfMonitor::instance().totalQueries() << "\n"
+         << "  },\n"
+         << "  \"top_domains\": [\n";
+
+    // Add top domains by latency
+    auto domains = PerfMonitor::instance().getDomainLatencies();
+    std::vector<std::pair<std::string, double>> sorted;
+    for (auto& [name, dl] : domains) {
+        sorted.push_back({name, dl.p95});
+    }
+    std::sort(sorted.begin(), sorted.end(),
+              [](auto& a, auto& b) { return a.second > b.second; });
+
+    bool first = true;
+    for (int i = 0; i < std::min(10, (int)sorted.size()); i++) {
+        if (!first) json << ",\n";
+        first = false;
+        json << "    {\"domain\": \"" << sorted[i].first
+             << "\", \"latency\": " << sorted[i].second << "}";
+    }
+
+    json << "\n  ]\n"
          << "}\n";
     return json.str();
 }

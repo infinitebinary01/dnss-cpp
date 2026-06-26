@@ -19,15 +19,31 @@ public:
     }
 
     void setLevel(LogLevel l) { level_ = l; }
+    void setJsonFormat(bool j) { jsonFormat_ = j; }
     LogLevel level() const { return level_; }
+    bool jsonFormat() const { return jsonFormat_; }
 
     void log(LogLevel l, const std::string& msg) {
         if (l < level_) return;
         std::lock_guard<std::mutex> lock(mutex_);
         auto t = std::time(nullptr);
         auto tm = *std::localtime(&t);
-        std::cerr << std::put_time(&tm, "%H:%M:%S") << " "
-                  << levelName(l) << ": " << msg << std::endl;
+        if (jsonFormat_) {
+            std::string escaped;
+            escaped.reserve(msg.size());
+            for (char c : msg) {
+                if (c == '"') escaped += "\\\"";
+                else if (c == '\\') escaped += "\\\\";
+                else if (c == '\n') escaped += "\\n";
+                else escaped += c;
+            }
+            std::cerr << "{\"ts\":\"" << std::put_time(&tm, "%Y-%m-%dT%H:%M:%S")
+                      << "\",\"level\":\"" << levelName(l)
+                      << "\",\"msg\":\"" << escaped << "\"}" << std::endl;
+        } else {
+            std::cerr << std::put_time(&tm, "%H:%M:%S") << " "
+                      << levelName(l) << ": " << msg << std::endl;
+        }
     }
 
     static std::string levelName(LogLevel l) {
@@ -42,6 +58,7 @@ public:
 
 private:
     LogLevel level_ = LogLevel::Info;
+    bool jsonFormat_ = false;
     std::mutex mutex_;
 };
 

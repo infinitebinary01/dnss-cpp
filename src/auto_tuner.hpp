@@ -27,6 +27,7 @@ public:
     double predictedLatencyMs() const { return predictedLat_.load(); }
     double latencyVariance() const { return latVariance_.load(); }
     double trendSlope() const { return trendSlope_.load(); }
+    double currentQps() const { return qps_.load(); }
 
 private:
     AutoTuner() = default;
@@ -39,6 +40,7 @@ private:
     std::atomic<double> predictedLat_{0};
     std::atomic<double> latVariance_{0};
     std::atomic<double> trendSlope_{0};
+    std::atomic<double> qps_{0};
 
     std::thread tuneThread_;
     std::atomic<bool> running_{false};
@@ -63,7 +65,7 @@ private:
 
     static constexpr size_t MAX_HISTORY = 60; // 5 min at 5s intervals
     static constexpr int MIN_CONNS = 12;
-    static constexpr int MAX_CONNS = 32;
+    static constexpr int MAX_CONNS = 64;
     static constexpr int MIN_THREADS = 8;
     static constexpr int MAX_THREADS = 16;
 

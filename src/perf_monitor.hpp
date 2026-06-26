@@ -7,6 +7,9 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <unordered_map>
+#include <string>
+#include <mutex>
 
 struct PerfSnapshot {
     double avgLatencyMs = 0;
@@ -26,6 +29,7 @@ public:
     static PerfMonitor& instance();
 
     void recordLatency(std::chrono::microseconds us);
+    void recordDomainLatency(const std::string& domain, std::chrono::microseconds us);
     void recordCacheHit();
     void recordCacheMiss();
     void recordError();
@@ -60,4 +64,17 @@ private:
     std::atomic<int> poolPending_{0};
 
     mutable SupplementaryStatsFn extraStatsFn_;
+
+    // Per-domain latency tracking
+    struct DomainLatency {
+        double avg = 0;
+        double p95 = 0;
+        int64_t count = 0;
+    };
+    mutable std::mutex domainMutex_;
+    mutable std::unordered_map<std::string, DomainLatency> domainLatencies_;
+
+public:
+    // Export per-domain latency data for dashboard
+    std::unordered_map<std::string, DomainLatency> getDomainLatencies() const;
 };
