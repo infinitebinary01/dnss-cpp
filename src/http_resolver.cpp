@@ -322,6 +322,34 @@ void HttpResolver::init() {
     });
 }
 
+void HttpResolver::reload() {
+    const char* envProxy = std::getenv("https_proxy");
+    if (!envProxy) envProxy = std::getenv("HTTPS_PROXY");
+    if (!envProxy) envProxy = std::getenv("http_proxy");
+    if (!envProxy) envProxy = std::getenv("HTTP_PROXY");
+    if (envProxy) {
+        proxy_ = envProxy;
+        LOG_INFO("Reload: proxy set to " + proxy_);
+    } else {
+        proxy_.clear();
+        LOG_INFO("Reload: no proxy configured (direct)");
+    }
+
+    const char* noProxy = std::getenv("no_proxy");
+    if (!noProxy) noProxy = std::getenv("NO_PROXY");
+    if (noProxy) {
+        noProxy_ = noProxy;
+    } else {
+        noProxy_.clear();
+    }
+
+    useProxy_ = !proxy_.empty() && !matchesNoProxy(upstreamHost_, noProxy_);
+    if (useProxy_) parseProxyUrl(proxy_, proxyHost_, proxyPort_);
+
+    LOG_INFO("HttpResolver: " + upstream_
+             + (useProxy_ ? " via proxy=" + proxyHost_ + ":" + proxyPort_ : ""));
+}
+
 void HttpResolver::maintain() {}
 
 void HttpResolver::Connection::close() {

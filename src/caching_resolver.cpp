@@ -59,6 +59,10 @@ void CachingResolver::init() {
     back_->init();
 }
 
+void CachingResolver::reload() {
+    back_->reload();
+}
+
 void CachingResolver::maintain() {
     back_->maintain();
     running_ = true;

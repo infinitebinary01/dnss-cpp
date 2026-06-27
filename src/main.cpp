@@ -26,14 +26,17 @@
 
 static std::atomic<bool> running{true};
 static std::atomic<bool> draining{false};
+static std::atomic<bool> reloadRequested{false};
+static std::string configFilePath;
 static std::shared_ptr<DnsServer> dnsServer;
 static std::shared_ptr<HttpsServer> httpsServer;
 static std::unique_ptr<MonitorServer> monitorServer;
+static std::shared_ptr<Resolver> resolverRef;
 
 static void signalHandler(int sig) {
     if (sig == SIGHUP) {
         LOG_INFO("SIGHUP received — re-reading config...");
-        // Re-read config via global, applied on next loop iteration
+        reloadRequested = true;
         return;
     }
     draining = true;
@@ -177,6 +180,7 @@ static Config parseArgs(int argc, char* argv[]) {
 
     // Load config file if specified
     if (!cfg.configFile.empty()) {
+        configFilePath = cfg.configFile;
         auto jsonKV = parseJson(cfg.configFile);
         for (auto& [k, v] : jsonKV) {
             if (k == "dns_listen_addr") cfg.dnsListenAddr = v;
@@ -304,6 +308,8 @@ int main(int argc, char* argv[]) {
             resolver = std::move(rawResolver);
         }
 
+        resolverRef = resolver;
+
         if (cacheResolver) {
             PerfMonitor::instance().setSupplementaryStats(
                 [cr = std::weak_ptr<CachingResolver>(cacheResolver)](PerfSnapshot s) {
@@ -369,6 +375,25 @@ int main(int argc, char* argv[]) {
 
     // Main loop — wait for signal
     while (running) {
+        if (reloadRequested.exchange(false)) {
+            LOG_INFO("Reloading proxy config...");
+            if (!configFilePath.empty()) {
+                auto jsonKV = parseJson(configFilePath);
+                auto it = jsonKV.find("proxy");
+                if (it != jsonKV.end()) {
+                    setenv("https_proxy", it->second.c_str(), 1);
+                } else {
+                    unsetenv("https_proxy");
+                }
+                it = jsonKV.find("no_proxy");
+                if (it != jsonKV.end()) {
+                    setenv("no_proxy", it->second.c_str(), 1);
+                } else {
+                    unsetenv("no_proxy");
+                }
+            }
+            if (resolverRef) resolverRef->reload();
+        }
         if (draining) {
             LOG_INFO("Draining active queries...");
             // Wait for in-flight queries to drain

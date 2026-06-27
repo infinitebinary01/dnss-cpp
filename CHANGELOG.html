@@ -32,6 +32,7 @@ h1{font-size:28px;font-weight:600;color:#1a73e8;margin-bottom:4px;}
 <li>Max thread pool workers: 16 → 32</li>
 </ul></li>
 <li><b>Fix</b>: Pre-allocate connection vector capacity to eliminate data race on concurrent access (caused intermittent segfault under load)</li>
+<li><b>Feature</b>: SIGHUP reload — edit config.json and send `pkill -HUP lynx` to switch proxy settings without restart</li>
 </ul>
 </div>
 

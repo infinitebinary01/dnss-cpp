@@ -26,6 +26,7 @@ public:
 
     void init() override;
     void maintain() override;
+    void reload() override;
     DnsMessagePtr query(const DnsMessage& req, bool allowFanOut = true) override;
 
     int countConnected() const;
