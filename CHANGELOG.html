@@ -30,8 +30,8 @@ h1{font-size:28px;font-weight:600;color:#1a73e8;margin-bottom:4px;}
 <li>L1 turbo cache: 256 → 1024 slots</li>
 <li>Max upstream connections: 64 → 128</li>
 <li>Max thread pool workers: 16 → 32</li>
-<li>DNS UDP workers: 2 → 4 (SO_REUSEPORT)</li>
 </ul></li>
+<li><b>Fix</b>: Pre-allocate connection vector capacity to eliminate data race on concurrent access (caused intermittent segfault under load)</li>
 </ul>
 </div>
 

@@ -8,6 +8,10 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # Detect io_uring support
 include(CheckIncludeFile)
 check_include_file("linux/io_uring.h" HAS_IO_URING)
+if(HAS_IO_URING AND NOT EXISTS "/usr/lib/x86_64-linux-gnu/liburing.so" AND NOT EXISTS "/usr/lib/liburing.so")
+    set(HAS_IO_URING OFF)
+    message(STATUS "io_uring headers found but library missing, disabling")
+endif()
 
 find_package(Boost REQUIRED COMPONENTS system)
 find_package(OpenSSL REQUIRED)

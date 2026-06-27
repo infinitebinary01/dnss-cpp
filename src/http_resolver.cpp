@@ -290,6 +290,9 @@ bool HttpResolver::openFunc(const std::string& host, const std::string& port,
 static void prewarmCache(HttpResolver* resolver);
 
 void HttpResolver::init() {
+    // Pre-reserve max capacity to avoid reallocation during concurrent access
+    connections_.reserve(MAX_CONNECTIONS);
+
     sslCtx_.set_default_verify_paths();
     sslCtx_.set_verify_mode(asio::ssl::verify_peer);
 
