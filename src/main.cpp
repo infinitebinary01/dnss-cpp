@@ -377,21 +377,11 @@ int main(int argc, char* argv[]) {
     while (running) {
         if (reloadRequested.exchange(false)) {
             LOG_INFO("Reloading proxy config...");
-            if (!configFilePath.empty()) {
-                auto jsonKV = parseJson(configFilePath);
-                auto it = jsonKV.find("proxy");
-                if (it != jsonKV.end()) {
-                    setenv("https_proxy", it->second.c_str(), 1);
-                } else {
-                    unsetenv("https_proxy");
-                }
-                it = jsonKV.find("no_proxy");
-                if (it != jsonKV.end()) {
-                    setenv("no_proxy", it->second.c_str(), 1);
-                } else {
-                    unsetenv("no_proxy");
-                }
-            }
+            // Clear stale env var so resolver reads ~/.lynx-proxy directly
+            unsetenv("https_proxy");
+            unsetenv("HTTPS_PROXY");
+            unsetenv("http_proxy");
+            unsetenv("HTTP_PROXY");
             if (resolverRef) resolverRef->reload();
         }
         if (draining) {

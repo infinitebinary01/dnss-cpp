@@ -11,6 +11,7 @@
 #include <thread>
 #include <chrono>
 #include <sstream>
+#include <fstream>
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
@@ -323,16 +324,37 @@ void HttpResolver::init() {
 }
 
 void HttpResolver::reload() {
-    const char* envProxy = std::getenv("https_proxy");
-    if (!envProxy) envProxy = std::getenv("HTTPS_PROXY");
-    if (!envProxy) envProxy = std::getenv("http_proxy");
-    if (!envProxy) envProxy = std::getenv("HTTP_PROXY");
-    if (envProxy) {
-        proxy_ = envProxy;
-        LOG_INFO("Reload: proxy set to " + proxy_);
+    // Read proxy from ~/.lynx-proxy (exists + non-empty = use it, else direct)
+    std::string home;
+    const char* homeEnv = std::getenv("HOME");
+    if (homeEnv) home = homeEnv;
+    std::string proxyPath = home + "/.lynx-proxy";
+    std::ifstream pf(proxyPath);
+    if (pf.is_open()) {
+        std::string line;
+        std::getline(pf, line);
+        while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
+            line.pop_back();
+        if (!line.empty()) {
+            proxy_ = line;
+            LOG_INFO("Reload: proxy set to " + proxy_);
+        } else {
+            proxy_.clear();
+            LOG_INFO("Reload: no proxy configured (empty ~/.lynx-proxy)");
+        }
     } else {
-        proxy_.clear();
-        LOG_INFO("Reload: no proxy configured (direct)");
+        // Check env var as fallback
+        const char* envProxy = std::getenv("https_proxy");
+        if (!envProxy) envProxy = std::getenv("HTTPS_PROXY");
+        if (!envProxy) envProxy = std::getenv("http_proxy");
+        if (!envProxy) envProxy = std::getenv("HTTP_PROXY");
+        if (envProxy && envProxy[0]) {
+            proxy_ = envProxy;
+            LOG_INFO("Reload: proxy set to " + proxy_ + " (from env var)");
+        } else {
+            proxy_.clear();
+            LOG_INFO("Reload: no proxy configured (direct)");
+        }
     }
 
     const char* noProxy = std::getenv("no_proxy");
