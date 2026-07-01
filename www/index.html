@@ -55,12 +55,12 @@
 
   <h2>Quick start</h2>
   <div class="code">
-sudo env https_proxy=http://192.168.49.1:8000/ \
+sudo env https_proxy=http://PROXY_IP:PROXY_PORT/ \
   ./build/lynx \
   --dns_listen_addr=":53" \
   --enable_dns_to_https \
   --https_upstream="https://1.1.1.1/dns-query" \
-  --fallback_upstream="192.168.254.254:53" \
+  --fallback_upstream="GATEWAY_IP:53" \
   --log_level=info
   </div>
 

@@ -65,10 +65,40 @@ static std::string detectGnomeProxy() {
     return {};
 }
 
+static void setSocketTimeoutMs(tcp::socket& socket, int ms) {
+    struct timeval tv;
+    tv.tv_sec = ms / 1000;
+    tv.tv_usec = (ms % 1000) * 1000;
+    setsockopt(socket.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(socket.native_handle(), SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+}
+
+void HttpResolver::UpstreamPool::parseUrl(const std::string& url) {
+    auto slash = url.find("://");
+    auto start = (slash != std::string::npos) ? slash + 3 : 0;
+    auto pathStart = url.find('/', start);
+    if (pathStart != std::string::npos) {
+        host = url.substr(start, pathStart - start);
+        target = url.substr(pathStart);
+    } else {
+        host = url.substr(start);
+        target = "/dns-query";
+    }
+    auto colon = host.find(':');
+    if (colon != std::string::npos) {
+        port = host.substr(colon + 1);
+        host = host.substr(0, colon);
+    } else {
+        port = "443";
+    }
+}
+
 HttpResolver::HttpResolver(const std::string& upstream, const std::string& caFile,
                            const std::string& fallback)
-    : upstream_(upstream), caFile_(caFile), fallback_(fallback),
+    : caFile_(caFile), fallback_(fallback),
       sslCtx_(asio::ssl::context::tlsv12_client) {
+    pools_.emplace_back();
+    pools_.back().parseUrl(upstream);
     const char* envProxy = std::getenv("https_proxy");
     if (!envProxy) envProxy = std::getenv("HTTPS_PROXY");
     if (!envProxy) envProxy = std::getenv("http_proxy");
@@ -77,7 +107,34 @@ HttpResolver::HttpResolver(const std::string& upstream, const std::string& caFil
     const char* noProxy = std::getenv("no_proxy");
     if (noProxy) noProxy_ = noProxy;
 
-    // If no proxy from env, try system settings (GNOME/KDE)
+    if (proxy_.empty()) {
+        auto gnome = detectGnomeProxy();
+        if (!gnome.empty()) {
+            proxy_ = gnome;
+            LOG_INFO("Auto-detected proxy: " + proxy_);
+        }
+    }
+}
+
+HttpResolver::HttpResolver(const std::string& primaryUpstream, const std::string& secondaryUpstream,
+                           const std::string& caFile, const std::string& fallback)
+    : caFile_(caFile), fallback_(fallback),
+      sslCtx_(asio::ssl::context::tlsv12_client) {
+    pools_.emplace_back();
+    pools_.back().parseUrl(primaryUpstream);
+    if (!secondaryUpstream.empty()) {
+        pools_.emplace_back();
+        pools_.back().parseUrl(secondaryUpstream);
+        LOG_INFO("Multi-upstream: racing " + primaryUpstream + " + " + secondaryUpstream);
+    }
+    const char* envProxy = std::getenv("https_proxy");
+    if (!envProxy) envProxy = std::getenv("HTTPS_PROXY");
+    if (!envProxy) envProxy = std::getenv("http_proxy");
+    if (!envProxy) envProxy = std::getenv("HTTP_PROXY");
+    if (envProxy) proxy_ = envProxy;
+    const char* noProxy = std::getenv("no_proxy");
+    if (noProxy) noProxy_ = noProxy;
+
     if (proxy_.empty()) {
         auto gnome = detectGnomeProxy();
         if (!gnome.empty()) {
@@ -92,7 +149,8 @@ HttpResolver::~HttpResolver() {
     connCtrl_.stop();
     if (warmThread_.joinable())
         warmThread_.join();
-    for (auto& c : connections_) c->close();
+    for (auto& pool : pools_)
+        for (auto& c : pool.connections) c->close();
 }
 
 static bool matchesNoProxy(const std::string& host, const std::string& noProxy) {
@@ -134,38 +192,21 @@ static void enableFastOpen(tcp::socket& socket) {
     setsockopt(socket.native_handle(), SOL_TCP, TCP_FASTOPEN, &qlen, sizeof(qlen));
 }
 
+void HttpResolver::enableTcpKeepalive(asio::ip::tcp::socket& socket) {
+    int keepalive = 1;
+    int keepidle = 10;
+    int keepintvl = 3;
+    int keepcnt = 3;
+    setsockopt(socket.native_handle(), SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(keepalive));
+    setsockopt(socket.native_handle(), IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(keepidle));
+    setsockopt(socket.native_handle(), IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(keepintvl));
+    setsockopt(socket.native_handle(), IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(keepcnt));
+}
+
 // Per-thread circuit breaker for proxy
 static thread_local int tlsProxyErrors = 0;
 static thread_local std::chrono::steady_clock::time_point tlsCircuitOpen;
 static thread_local bool tlsCircuitTripped = false;
-
-static bool parseUpstreamUrl(const std::string& upstream,
-                             std::string& scheme, std::string& host,
-                             std::string& port, std::string& target) {
-    auto slash = upstream.find("://");
-    scheme = "https";
-    size_t start = 0;
-    if (slash != std::string::npos) {
-        scheme = upstream.substr(0, slash);
-        start = slash + 3;
-    }
-    auto path_start = upstream.find('/', start);
-    if (path_start != std::string::npos) {
-        host = upstream.substr(start, path_start - start);
-        target = upstream.substr(path_start);
-    } else {
-        host = upstream.substr(start);
-        target = "/dns-query";
-    }
-    auto colon = host.find(':');
-    if (colon != std::string::npos) {
-        port = host.substr(colon + 1);
-        host = host.substr(0, colon);
-    } else {
-        port = (scheme == "https") ? "443" : "80";
-    }
-    return true;
-}
 
 static size_t readHttpBody(const std::vector<uint8_t>& rawResp,
                            std::string& bodyOut, std::string& statusOut) {
@@ -237,6 +278,7 @@ bool HttpResolver::openFunc(const std::string& host, const std::string& port,
         if (!ec) {
             { int flag = 1; setsockopt(stream.next_layer().native_handle(), SOL_TCP, TCP_NODELAY, &flag, sizeof(flag)); }
             enableFastOpen(stream.next_layer());
+            enableTcpKeepalive(stream.next_layer());
 
             std::string connectReq = "CONNECT " + host + ":" + port + " HTTP/1.1\r\n"
                                      "Host: " + host + ":" + port + "\r\n"
@@ -277,6 +319,7 @@ bool HttpResolver::openFunc(const std::string& host, const std::string& port,
     if (ec) return false;
 
     { int flag = 1; setsockopt(stream.next_layer().native_handle(), SOL_TCP, TCP_NODELAY, &flag, sizeof(flag)); }
+    enableTcpKeepalive(stream.next_layer());
 
     if (!SSL_set_tlsext_host_name(stream.native_handle(), host.c_str())) {
         ec = boost::asio::error::no_protocol_option;
@@ -291,20 +334,20 @@ bool HttpResolver::openFunc(const std::string& host, const std::string& port,
 static void prewarmCache(HttpResolver* resolver);
 
 void HttpResolver::init() {
-    // Pre-reserve max capacity to avoid reallocation during concurrent access
-    connections_.reserve(MAX_CONNECTIONS);
+    // Pre-reserve max capacity for all pools
+    for (auto& pool : pools_)
+        pool.connections.reserve(MAX_CONNECTIONS / pools_.size());
 
     sslCtx_.set_default_verify_paths();
     sslCtx_.set_verify_mode(asio::ssl::verify_peer);
 
-    parseUpstreamUrl(upstream_, upstreamScheme_, upstreamHost_,
-                     upstreamPort_, upstreamTarget_);
-
-    useProxy_ = !proxy_.empty() && !matchesNoProxy(upstreamHost_, noProxy_);
+    useProxy_ = !proxy_.empty() && !matchesNoProxy(pools_[0].host, noProxy_);
     if (useProxy_) parseProxyUrl(proxy_, proxyHost_, proxyPort_);
 
-    LOG_INFO("HttpResolver: " + upstream_
+    LOG_INFO("HttpResolver: " + pools_[0].host + ":" + pools_[0].port + pools_[0].target
              + (useProxy_ ? " via proxy=" + proxyHost_ + ":" + proxyPort_ : ""));
+    if (pools_.size() > 1)
+        LOG_INFO("Secondary upstream: " + pools_[1].host + ":" + pools_[1].port + pools_[1].target);
 
     // Start connection controller with open callback
     connCtrl_.setOpenFunc([this](const std::string& host, const std::string& port,
@@ -365,14 +408,37 @@ void HttpResolver::reload() {
         noProxy_.clear();
     }
 
-    useProxy_ = !proxy_.empty() && !matchesNoProxy(upstreamHost_, noProxy_);
+    useProxy_ = !proxy_.empty() && !matchesNoProxy(pools_[0].host, noProxy_);
     if (useProxy_) parseProxyUrl(proxy_, proxyHost_, proxyPort_);
 
-    LOG_INFO("HttpResolver: " + upstream_
+    LOG_INFO("HttpResolver: " + pools_[0].host + ":" + pools_[0].port + pools_[0].target
              + (useProxy_ ? " via proxy=" + proxyHost_ + ":" + proxyPort_ : ""));
 }
 
-void HttpResolver::maintain() {}
+void HttpResolver::maintain() {
+    // Per-upstream health rebalancing
+    if (pools_.size() < 2) return;
+    for (auto& pool : pools_) {
+        int total = pool.successes + pool.errors;
+        if (total < 10) continue; // not enough samples
+        int errRatio = (pool.errors * 100) / total;
+        pool.lastErrorRatio = errRatio;
+
+        int currentSize = pool.connections.size();
+        if (errRatio > 30 && currentSize > 2) {
+            // Bad pool: shrink by 1
+            pool.connections.pop_back();
+            LOG_DEBUG("Shrinking unhealthy pool " + pool.host + " errRatio=" +
+                      std::to_string(errRatio) + "%");
+        } else if (errRatio < 5 && currentSize < MAX_CONNECTIONS / 2) {
+            // Healthy pool: grow by 1
+            ensurePoolSize(pool, currentSize + 1);
+        }
+        // Decay counters to keep them recent
+        pool.successes = pool.successes / 2;
+        pool.errors = pool.errors / 2;
+    }
+}
 
 void HttpResolver::Connection::close() {
     if (stream) {
@@ -407,6 +473,7 @@ bool HttpResolver::Connection::open(const std::string& proxyHost,
         if (!ec) {
             { int flag = 1; setsockopt(stream->next_layer().native_handle(), SOL_TCP, TCP_NODELAY, &flag, sizeof(flag)); }
             enableFastOpen(stream->next_layer());
+            enableTcpKeepalive(stream->next_layer());
 
             std::string connectReq = "CONNECT " + host + ":" + port + " HTTP/1.1\r\n"
                                      "Host: " + host + ":" + port + "\r\n"
@@ -455,6 +522,7 @@ bool HttpResolver::Connection::open(const std::string& proxyHost,
     if (ec) return false;
 
     { int flag = 1; setsockopt(stream->next_layer().native_handle(), SOL_TCP, TCP_NODELAY, &flag, sizeof(flag)); }
+    enableTcpKeepalive(stream->next_layer());
 
     if (!SSL_set_tlsext_host_name(stream->native_handle(), host.c_str())) {
         ec = boost::asio::error::no_protocol_option;
@@ -472,8 +540,8 @@ DnsMessagePtr HttpResolver::Connection::exchange(const std::vector<uint8_t>& wir
 
     boost::system::error_code ec;
 
-    // Aggressive timeout to cut tail latency — fail fast, retry on next connection
-    setSocketTimeout(stream->next_layer(), 1); // socket read/write timeout
+    // Aggressive timeout — fail fast, retry on next connection or upstream
+    setSocketTimeoutMs(stream->next_layer(), 5000); // socket read/write timeout (ms)
 
     std::ostringstream oss;
     oss << "POST " << target << " HTTP/1.1\r\n"
@@ -578,7 +646,12 @@ DnsMessagePtr HttpResolver::Connection::exchange(const std::vector<uint8_t>& wir
 }
 
 DnsMessagePtr HttpResolver::query(const DnsMessage& req, bool allowFanOut) {
-    PerfMonitor::instance().recordConnUse(countConnected(), connections_.size());
+    static std::atomic<int> queryCount{0};
+    if (queryCount.fetch_add(1, std::memory_order_relaxed) % 100 == 0)
+        maintain();
+    int totalConns = 0;
+    for (auto& pool : pools_) totalConns += pool.connections.size();
+    PerfMonitor::instance().recordConnUse(countConnected(), totalConns);
     auto t0 = std::chrono::steady_clock::now();
 
     // Circuit breaker: if proxy errors spiked, bypass proxy temporarily
@@ -657,16 +730,31 @@ DnsMessagePtr HttpResolver::doFallback(const DnsMessage& req) {
     }
 }
 
-void HttpResolver::ensurePoolSize(size_t target) {
-    if (connections_.size() >= target) return;
-    std::lock_guard<std::mutex> lock(growMutex_);
-    while (connections_.size() < target) {
+void HttpResolver::ensurePoolSize(UpstreamPool& pool, size_t target) {
+    if (pool.connections.size() >= target) return;
+    std::lock_guard<std::mutex> lock(pool.growMutex);
+    while (pool.connections.size() < target) {
         auto conn = std::make_unique<Connection>();
-        conn->host = upstreamHost_;
-        conn->port = upstreamPort_;
-        conn->target = upstreamTarget_;
-        connections_.push_back(std::move(conn));
+        conn->host = pool.host;
+        conn->port = pool.port;
+        conn->target = pool.target;
+        conn->poolRef = &pool;
+        pool.connections.push_back(std::move(conn));
     }
+}
+
+HttpResolver::Connection* HttpResolver::getNextConnection(HttpResolver::UpstreamPool& pool) {
+    int numConns = pool.connections.size();
+    if (numConns == 0) return nullptr;
+    int start = pool.nextConn.fetch_add(1, std::memory_order_relaxed) % numConns;
+    for (int i = 0; i < numConns; ++i) {
+        int idx = (start + i) % numConns;
+        auto& conn = pool.connections[idx];
+        if (!conn->connected.load()) continue;
+        if (conn->inUse.exchange(true)) continue;
+        return conn.get();
+    }
+    return nullptr;
 }
 
 int HttpResolver::countConnected() const {
@@ -688,43 +776,53 @@ void HttpResolver::openConnectionAsync(Connection* conn) {
     }).detach();
 }
 
-void HttpResolver::warmUp() {
-    int target = AutoTuner::instance().recommendedConnections();
-    ensurePoolSize(static_cast<size_t>(target));
-
-    std::vector<std::future<bool>> futures;
-    for (auto& conn : connections_) {
-        futures.push_back(std::async(std::launch::async, [conn = conn.get(), this]() {
-            if (conn->stream) connCtrl_.unmanage(conn->stream.get());
-            boost::system::error_code ec;
-            bool ok = conn->open(proxyHost_, proxyPort_, noProxy_, sslCtx_, useProxy_, ec);
-            if (conn->stream) {
-                connCtrl_.manage(conn->host, conn->port, conn->target,
-                                 conn->stream.get(), &conn->connected);
-            }
-            if (!ok) conn->connected = false;
-            return ok;
-        }));
+void HttpResolver::openPoolAsync(UpstreamPool& pool) {
+    for (auto& conn : pool.connections) {
+        if (!conn->connected.load())
+            openConnectionAsync(conn.get());
     }
-    // Wait for all opens, then validate with a quick health check
-    std::thread([this, futures = std::move(futures)]() {
+}
+
+void HttpResolver::warmUp() {
+    int targetPerPool = AutoTuner::instance().recommendedConnections()
+                        / static_cast<int>(pools_.size());
+    if (targetPerPool < 2) targetPerPool = 2;
+
+    std::vector<std::future<void>> futures;
+    for (auto& pool : pools_) {
+        ensurePoolSize(pool, static_cast<size_t>(targetPerPool));
+        for (auto& conn : pool.connections) {
+            futures.push_back(std::async(std::launch::async, [conn = conn.get(), this]() {
+                if (conn->stream) connCtrl_.unmanage(conn->stream.get());
+                boost::system::error_code ec;
+                bool ok = conn->open(proxyHost_, proxyPort_, noProxy_, sslCtx_, useProxy_, ec);
+                if (conn->stream) {
+                    connCtrl_.manage(conn->host, conn->port, conn->target,
+                                     conn->stream.get(), &conn->connected);
+                }
+                if (!ok) conn->connected = false;
+            }));
+        }
+    }
+
+    int totalConns = 0;
+    for (auto& pool : pools_) totalConns += pool.connections.size();
+
+    std::thread([this, futures = std::move(futures), totalConns]() {
         for (auto& f : futures) f.wait();
-        // Validate each connection with a real DNS query
-        // (connections that report 'connected' but are dead will fail here)
         auto healthWire = ConnectionController::makeHealthQuery();
-        for (auto& conn : connections_) {
-            if (!conn->connected.load()) continue;
-            conn->inUse = true;
-            auto reply = conn->exchange(healthWire);
-            if (!reply) {
-                connCtrl_.notifyFailure(conn->stream.get());
-            } else {
-                connCtrl_.notifyUsed(conn->stream.get());
+        for (auto& pool : pools_) {
+            for (auto& conn : pool.connections) {
+                if (!conn->connected.load()) continue;
+                conn->inUse = true;
+                auto reply = conn->exchange(healthWire);
+                if (!reply) connCtrl_.notifyFailure(conn->stream.get());
+                else connCtrl_.notifyUsed(conn->stream.get());
+                conn->inUse = false;
             }
-            conn->inUse = false;
         }
         LOG_INFO("WarmUp: " + std::to_string(countConnected()) + "/" +
-                 std::to_string(connections_.size()) + " connections ready");
+                 std::to_string(totalConns) + " connections ready");
     }).detach();
 }
 
@@ -735,47 +833,48 @@ DnsMessagePtr HttpResolver::doPost(const DnsMessage& req) {
 DnsMessagePtr HttpResolver::doPost(const DnsMessage& req, bool allowFanOut) {
     auto wire = req.pack();
 
-    int targetConns = AutoTuner::instance().recommendedConnections();
+    int targetPerPool = AutoTuner::instance().recommendedConnections()
+                        / static_cast<int>(pools_.size());
+    if (targetPerPool < 2) targetPerPool = 2;
     bool fanOut = AutoTuner::instance().fanOutEnabled() && allowFanOut;
 
-    // Grow pool if needed
-    ensurePoolSize(static_cast<size_t>(targetConns));
+    // Grow pools if needed
+    for (auto& pool : pools_)
+        ensurePoolSize(pool, static_cast<size_t>(targetPerPool));
 
-    // Parallel fan-out: race all connected connections, take the first to respond
+    // Multi-upstream racing: try one connection from each pool in parallel
     if (fanOut) {
-        auto result = doPostParallel(wire);
+        auto result = raceUpstreams(wire);
         if (result) return result;
-        // parallel failed, fall through to single-connection retry
     }
 
-    // Try connected connections round-robin with retry + backoff
-    int numConns = connections_.size();
+    // Fallback: try connections round-robin across all pools
     int backoffMs = 10;
-    for (int attempt = 0; attempt < std::min(numConns * 3, 8); ++attempt) {
-        int idx = nextConn_.fetch_add(1, std::memory_order_relaxed) % numConns;
-        auto& conn = connections_[idx];
-        if (!conn->connected.load()) continue;
-        if (conn->inUse.exchange(true)) continue;
+    int totalConns = 0;
+    for (auto& pool : pools_) totalConns += pool.connections.size();
+    for (int attempt = 0; attempt < std::min(totalConns * 2, 12); ++attempt) {
+        for (auto& pool : pools_) {
+            auto* conn = getNextConnection(pool);
+            if (!conn) continue;
 
-        auto reply = conn->exchange(wire);
-        if (reply) {
+            auto reply = conn->exchange(wire);
+            if (reply) {
+                conn->inUse = false;
+                connCtrl_.notifyUsed(conn->stream.get());
+                if (conn->poolRef) conn->poolRef->successes++;
+                tlsProxyErrors = 0;
+                return reply;
+            }
+            connCtrl_.notifyFailure(conn->stream.get());
+            if (conn->poolRef) conn->poolRef->errors++;
             conn->inUse = false;
-            connCtrl_.notifyUsed(conn->stream.get());
-            // Reset circuit breaker on success
-            tlsProxyErrors = 0;
-            return reply;
-        }
-        connCtrl_.notifyFailure(conn->stream.get());
-        conn->inUse = false;
 
-        // Circuit breaker: count proxy errors
-        if (useProxy_ && ++tlsProxyErrors > 5) {
-            tlsCircuitTripped = true;
-            tlsCircuitOpen = std::chrono::steady_clock::now();
-            LOG_WARN("Circuit breaker: proxy error spike, bypassing for 60s");
+            if (useProxy_ && ++tlsProxyErrors > 5) {
+                tlsCircuitTripped = true;
+                tlsCircuitOpen = std::chrono::steady_clock::now();
+                LOG_WARN("Circuit breaker: proxy error spike, bypassing for 60s");
+            }
         }
-
-        // Retry with backoff
         if (attempt < 4) {
             std::this_thread::sleep_for(std::chrono::milliseconds(backoffMs));
             backoffMs *= 2;
@@ -783,71 +882,99 @@ DnsMessagePtr HttpResolver::doPost(const DnsMessage& req, bool allowFanOut) {
     }
 
     // No connected connections — open just 1 synchronously, rest in background
-    for (auto& conn : connections_) {
-        if (conn->connected.load()) continue;
-        if (conn->inUse.exchange(true)) continue;
+    for (auto& pool : pools_) {
+        for (auto& conn : pool.connections) {
+            if (conn->connected.load()) continue;
+            if (conn->inUse.exchange(true)) continue;
 
-        if (conn->stream) connCtrl_.unmanage(conn->stream.get());
-        boost::system::error_code ec;
-        conn->open(proxyHost_, proxyPort_, noProxy_, sslCtx_, useProxy_, ec);
-        if (conn->stream) {
-            connCtrl_.manage(conn->host, conn->port, conn->target,
-                             conn->stream.get(), &conn->connected);
-        }
-        if (ec) {
-            conn->inUse = false;
-            continue;
-        }
-
-        auto reply = conn->exchange(wire);
-        if (reply) {
-            conn->inUse = false;
-            connCtrl_.notifyUsed(conn->stream.get());
-            // Open remaining connections in background
-            for (auto& c : connections_) {
-                if (!c->connected.load() && c.get() != conn.get())
-                    openConnectionAsync(c.get());
+            if (conn->stream) connCtrl_.unmanage(conn->stream.get());
+            boost::system::error_code ec;
+            conn->open(proxyHost_, proxyPort_, noProxy_, sslCtx_, useProxy_, ec);
+            if (conn->stream) {
+                connCtrl_.manage(conn->host, conn->port, conn->target,
+                                 conn->stream.get(), &conn->connected);
             }
-            tlsProxyErrors = 0;
-            return reply;
-        }
-        connCtrl_.notifyFailure(conn->stream.get());
-        conn->inUse = false;
+            if (ec) { conn->inUse = false; continue; }
 
-        if (useProxy_ && ++tlsProxyErrors > 5) {
-            tlsCircuitTripped = true;
-            tlsCircuitOpen = std::chrono::steady_clock::now();
+            auto reply = conn->exchange(wire);
+            if (reply) {
+                conn->inUse = false;
+                connCtrl_.notifyUsed(conn->stream.get());
+                if (conn->poolRef) conn->poolRef->successes++;
+                for (auto& p : pools_)
+                    openPoolAsync(p);
+                tlsProxyErrors = 0;
+                return reply;
+            }
+            connCtrl_.notifyFailure(conn->stream.get());
+            if (conn->poolRef) conn->poolRef->errors++;
+            conn->inUse = false;
+
+            if (useProxy_ && ++tlsProxyErrors > 5) {
+                tlsCircuitTripped = true;
+                tlsCircuitOpen = std::chrono::steady_clock::now();
+            }
+            break;
         }
-        break;
     }
 
     return nullptr;
 }
 
 DnsMessagePtr HttpResolver::doPostParallel(const std::vector<uint8_t>& wire) {
-    // Fan-out: try at most 3 connected connections in round-robin
-    // This limits tail latency — if 3 connections fail, fall through to sync open
-    int numConns = connections_.size();
-    int startIdx = nextConn_.fetch_add(1, std::memory_order_relaxed) % numConns;
-    int tried = 0;
+    return raceUpstreams(wire);
+}
 
-    for (int i = 0; i < numConns && tried < 3; ++i) {
-        int idx = (startIdx + i) % numConns;
-        auto& conn = connections_[idx];
-        if (!conn->connected.load()) continue;
-        if (conn->inUse.exchange(true)) continue;
-        tried++;
+DnsMessagePtr HttpResolver::raceUpstreams(const std::vector<uint8_t>& wire) {
+    // True parallel racing: take one connection from each pool, run exchanges
+    // concurrently via std::async, return the first to respond.
+    std::vector<Connection*> candidates;
+    for (auto& pool : pools_) {
+        auto* conn = getNextConnection(pool);
+        if (conn) candidates.push_back(conn);
+    }
+    if (candidates.empty()) return nullptr;
 
-        auto reply = conn->exchange(wire);
-
-        if (reply) {
-            conn->inUse = false;
-            connCtrl_.notifyUsed(conn->stream.get());
-            return reply;
-        }
-        connCtrl_.notifyFailure(conn->stream.get());
-        conn->inUse = false;
+    // Also grab a few more from the first pool for extra parallelism
+    auto& firstPool = pools_[0];
+    int extra = 0;
+    for (int i = 0; i < static_cast<int>(firstPool.connections.size()) && extra < 2; ++i) {
+        auto* conn = getNextConnection(firstPool);
+        if (!conn) break;
+        candidates.push_back(conn);
+        ++extra;
     }
 
-    return nullptr;
+    std::vector<std::future<DnsMessagePtr>> futures;
+    for (auto* conn : candidates) {
+        futures.push_back(std::async(std::launch::async, [conn, &wire]() {
+            return conn->exchange(wire);
+        }));
+    }
+
+    DnsMessagePtr result;
+    for (auto& f : futures) {
+        if (f.wait_for(std::chrono::milliseconds(300)) == std::future_status::ready) {
+            auto r = f.get();
+            if (r) {
+                result = std::move(r);
+                break;
+            }
+        }
+    }
+
+    for (auto* conn : candidates) {
+        conn->inUse = false;
+        if (conn->stream) {
+            if (result) {
+                connCtrl_.notifyUsed(conn->stream.get());
+                if (conn->poolRef) conn->poolRef->successes++;
+            } else {
+                connCtrl_.notifyFailure(conn->stream.get());
+                if (conn->poolRef) conn->poolRef->errors++;
+            }
+        }
+    }
+
+    return result;
 }

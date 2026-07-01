@@ -197,6 +197,9 @@ void DnsServer::listenAndServe() {
     udpSocket_.bind(udpEndpoint, ec);
     if (ec) { LOG_ERROR("Failed to bind UDP: " + ec.message()); return; }
 
+    // Start async receive on main socket (also workers via SO_REUSEPORT)
+    startUdpReceive();
+
     resolver_->maintain();
 
     // Start multi-worker UDP listeners (SO_REUSEPORT allows multiple sockets on same port)

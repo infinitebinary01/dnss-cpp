@@ -8,7 +8,7 @@
 #include "connection_controller.hpp"
 #include <string>
 #include <vector>
-#include <boost/asio.hpp>
+#include <deque>
 #include <boost/asio/ssl.hpp>
 #include <memory>
 #include <mutex>
@@ -22,6 +22,8 @@ class HttpResolver : public Resolver {
 public:
     HttpResolver(const std::string& upstream, const std::string& caFile,
                  const std::string& fallback);
+    HttpResolver(const std::string& primaryUpstream, const std::string& secondaryUpstream,
+                 const std::string& caFile, const std::string& fallback);
     ~HttpResolver() override;
 
     void init() override;
@@ -32,6 +34,8 @@ public:
     int countConnected() const;
 
 private:
+    struct UpstreamPool;
+
     struct Connection {
         asio::io_context ctx;
         std::unique_ptr<asio::ssl::stream<asio::ip::tcp::socket>> stream;
@@ -40,6 +44,7 @@ private:
         std::string host;
         std::string port;
         std::string target;
+        UpstreamPool* poolRef{nullptr}; // back-pointer for health tracking
 
         void close();
         bool open(const std::string& proxyHost, const std::string& proxyPort,
@@ -48,28 +53,43 @@ private:
         DnsMessagePtr exchange(const std::vector<uint8_t>& wire);
     };
 
+    struct UpstreamPool {
+        std::string host;
+        std::string port;
+        std::string target;
+        std::vector<std::unique_ptr<Connection>> connections;
+        std::mutex growMutex;
+        std::atomic<int> nextConn{0};
+
+        // Per-upstream health tracking
+        std::atomic<int> errors{0};
+        std::atomic<int> successes{0};
+        int lastErrorRatio = 0;
+
+        void parseUrl(const std::string& url);
+    };
+
     DnsMessagePtr doPost(const DnsMessage& req);
     DnsMessagePtr doPost(const DnsMessage& req, bool allowFanOut);
     DnsMessagePtr doPostParallel(const std::vector<uint8_t>& wire);
+    DnsMessagePtr raceUpstreams(const std::vector<uint8_t>& wire);
     DnsMessagePtr doFallback(const DnsMessage& req);
 
-    void ensurePoolSize(size_t target);
+    void ensurePoolSize(UpstreamPool& pool, size_t target);
+    Connection* getNextConnection(UpstreamPool& pool);
 
     void openConnectionAsync(Connection* conn);
+    void openPoolAsync(UpstreamPool& pool);
     void warmUp();
+    static void enableTcpKeepalive(asio::ip::tcp::socket& socket);
     bool openFunc(const std::string& host, const std::string& port,
                   const std::string& target,
                   asio::ssl::stream<asio::ip::tcp::socket>& stream,
                   boost::system::error_code& ec);
 
-    std::string upstream_;
+    std::deque<UpstreamPool> pools_;
     std::string caFile_;
     std::string fallback_;
-
-    std::string upstreamHost_;
-    std::string upstreamPort_;
-    std::string upstreamTarget_;
-    std::string upstreamScheme_;
 
     std::string proxy_;
     std::string noProxy_;
@@ -78,10 +98,6 @@ private:
     std::string proxyPort_;
 
     asio::ssl::context sslCtx_{asio::ssl::context::tlsv12_client};
-
-    std::vector<std::unique_ptr<Connection>> connections_;
-    std::mutex growMutex_;
-    std::atomic<int> nextConn_{0};
 
     std::atomic<bool> warmStarted_{false};
     std::thread warmThread_;

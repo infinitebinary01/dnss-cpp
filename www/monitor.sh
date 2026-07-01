@@ -19,7 +19,7 @@ while ss -tuln | grep -q ":53 "; do sleep 1; done
 echo "Port 53 free"
 
 # Start C++ dnss
-export https_proxy=http://192.168.49.1:8000/
+export https_proxy=http://PROXY_IP:PROXY_PORT/
 rm -f "$CPP_LOG"
 setsid "$BINARY" \
   --dns_listen_addr=":53" \

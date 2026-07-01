@@ -200,9 +200,8 @@ DnsMessagePtr CachingResolver::query(const DnsMessage& req, bool allowFanOut) {
     cacheMisses_++;
     PerfMonitor::instance().recordCacheMiss();
 
-    // Disable fan-out for cache misses — no benefit racing multiple connections
-    // through a slow proxy; it just doubles the bottleneck
-    auto reply = back_->query(req, false);
+    // Honor auto-tuner's fan-out decision (honed globally based on latency/errors)
+    auto reply = back_->query(req, AutoTuner::instance().fanOutEnabled());
     if (!reply) return nullptr;
 
     if (shouldCache(q, *reply)) {

@@ -23,6 +23,21 @@ h1{font-size:28px;font-weight:600;color:#1a73e8;margin-bottom:4px;}
 <p class='subtitle'>DNS-over-HTTPS proxy</p>
 
 <div class='version'>
+<h2>v0.3.0</h2>
+<p class='date'>2026-07-01</p>
+<ul>
+<li><b>Feature</b>: Multi-upstream racing — secondary DoH server via <code>--https_upstream2</code> / <code>config.json</code>. Queries fan out to both upstreams in parallel; fastest response wins.</li>
+<li><b>Feature</b>: Per-upstream health tracking (<code>UpstreamPool.errors</code>/<code>successes</code>). Pools with &gt;30% error ratio shrink; healthy pools grow.</li>
+<li><b>Feature</b>: TCP keepalive (<code>KEEPIDLE=10s</code>, <code>KEEPINTVL=3s</code>, <code>KEEPCNT=3</code>) on all DoH connections — dead upstreams detected in ~30s.</li>
+<li><b>Feature</b>: <code>scripts/setup-system-dns.sh</code> — grants <code>cap_net_bind_service</code>, detects DNS manager (NetworkManager/systemd-resolved/resolvconf/static), sets system DNS to 127.0.0.1, saves backup for <code>--restore</code>.</li>
+<li><b>Fix</b>: Dead UDP socket in DNS server — main <code>udpSocket_</code> was bound but never read from (async receive was never started). Kernel silently queued packets there; started async receive to fix.</li>
+<li><b>Fix</b>: Socket timeout increased to 5000ms (was 200ms) — prevents retry floods through slow proxies (e.g. PdaNet tether at 2-3s RTT).</li>
+<li><b>Fix</b>: Cache-miss fan-out re-enabled (<code>CachingResolver::query</code>) — auto-tuner now controls fan-out globally for misses too.</li>
+<li><b>Refactor</b>: Connection pool moved from single <code>vector</code> to <code>deque&lt;UpstreamPool&gt;</code> — each upstream gets independent pool with mutex and health counters.</li>
+</ul>
+</div>
+
+<div class='version'>
 <h2>v0.2.2</h2>
 <p class='date'>2026-06-26</p>
 <ul>

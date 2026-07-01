@@ -54,6 +54,7 @@ struct Config {
     std::string fallbackUpstream = "8.8.8.8:53";
     bool enableDnsToHttps = false;
     std::string httpsUpstream = "https://dns.google/dns-query";
+    std::string httpsUpstream2;
     std::string httpsClientCAFile;
     bool enableCache = true;
     bool enableHttpsToDns = false;
@@ -80,7 +81,8 @@ static void printUsage(const char* prog) {
               << "  --dns_server_for_domain=<map>      domain:addr pairs (comma-separated)\n"
               << "  --fallback_upstream=<addr>         DNS server for upstream resolution (default: 8.8.8.8:53)\n"
               << "  --enable_dns_to_https              enable DNS-to-HTTPS proxy\n"
-              << "  --https_upstream=<url>             URL of DoH upstream (default: https://dns.google/dns-query)\n"
+              << "  --https_upstream=<url>             URL of primary DoH upstream (default: https://dns.google/dns-query)\n"
+              << "  --https_upstream2=<url>            URL of secondary DoH upstream for multi-racing (optional)\n"
               << "  --https_client_cafile=<file>       CA file for HTTPS client\n"
               << "  --enable_cache=<bool>              enable cache (default: true)\n"
               << "  --enable_https_to_dns              enable HTTPS-to-DNS proxy\n"
@@ -189,6 +191,7 @@ static Config parseArgs(int argc, char* argv[]) {
             else if (k == "fallback_upstream") cfg.fallbackUpstream = v;
             else if (k == "enable_dns_to_https") cfg.enableDnsToHttps = (v == "true" || v == "1");
             else if (k == "https_upstream") cfg.httpsUpstream = v;
+            else if (k == "https_upstream2") cfg.httpsUpstream2 = v;
             else if (k == "https_client_cafile") cfg.httpsClientCAFile = v;
             else if (k == "enable_cache") cfg.enableCache = (v == "true" || v == "1" || v == "");
             else if (k == "enable_https_to_dns") cfg.enableHttpsToDns = (v == "true" || v == "1");
@@ -232,6 +235,7 @@ static Config parseArgs(int argc, char* argv[]) {
         else if (key == "--fallback_upstream") cfg.fallbackUpstream = val;
         else if (key == "--enable_dns_to_https") cfg.enableDnsToHttps = true;
         else if (key == "--https_upstream") cfg.httpsUpstream = val;
+        else if (key == "--https_upstream2") cfg.httpsUpstream2 = val;
         else if (key == "--https_client_cafile") cfg.httpsClientCAFile = val;
         else if (key == "--enable_cache") {
             cfg.enableCache = (val.empty() || val == "true" || val == "1");
@@ -296,7 +300,8 @@ int main(int argc, char* argv[]) {
         auto overrides = DomainMap::fromString(cfg.dnsServerForDomain);
 
         auto rawResolver = std::make_unique<HttpResolver>(
-            cfg.httpsUpstream, cfg.httpsClientCAFile, cfg.fallbackUpstream);
+            cfg.httpsUpstream, cfg.httpsUpstream2,
+            cfg.httpsClientCAFile, cfg.fallbackUpstream);
 
         std::shared_ptr<Resolver> resolver;
         std::shared_ptr<CachingResolver> cacheResolver;
