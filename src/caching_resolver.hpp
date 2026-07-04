@@ -109,5 +109,5 @@ private:
     bool needsRefresh(const CacheEntry& entry);
     void gcCache();
     void preemptiveRefreshLoop();
-    void refreshEntry(const CacheKey& key, CacheEntry& entry);
+    void refreshEntry(const CacheKey& key, const DnsQuestion& question);
 };

@@ -22,9 +22,45 @@
 #include <algorithm>
 #include <future>
 #include <netinet/tcp.h>
+#include <map>
+#include <optional>
 
 using tcp = asio::ip::tcp;
 using udp = asio::ip::udp;
+
+// Hardcoded IPs for well-known DoH providers — used when system DNS is unavailable.
+// This makes lynx work on any network regardless of /etc/resolv.conf.
+static const std::map<std::string, std::vector<std::string>> BUILTIN_DNS_IPS = {
+    {"dns.google",           {"8.8.8.8", "8.8.4.4", "2001:4860:4860::8888", "2001:4860:4860::8844"}},
+    {"dns.google.com",       {"8.8.8.8", "8.8.4.4", "2001:4860:4860::8888", "2001:4860:4860::8844"}},
+    {"cloudflare-dns.com",   {"1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001"}},
+    {"dns.quad9.net",        {"9.9.9.9", "149.112.112.112", "2620:fe::fe", "2620:fe::9"}},
+};
+
+// Resolve hostname: tries hardcoded IPs first (avoids DNS loop when lynx is
+// the system DNS), then falls back to system DNS.
+static std::optional<asio::ip::tcp::endpoint> resolveHost(
+    asio::io_context& ctx, const std::string& host, uint16_t port) {
+    // 1) Hardcoded IPs for well-known DoH providers — avoids DNS loop
+    auto it = BUILTIN_DNS_IPS.find(host);
+    if (it != BUILTIN_DNS_IPS.end()) {
+        for (const auto& ipStr : it->second) {
+            boost::system::error_code ec;
+            auto ip = asio::ip::make_address(ipStr, ec);
+            if (!ec)
+                return asio::ip::tcp::endpoint(ip, port);
+        }
+    }
+    // 2) Fallback: system DNS
+    {
+        boost::system::error_code ec;
+        tcp::resolver resolver(ctx);
+        auto results = resolver.resolve(host, std::to_string(port), ec);
+        if (!ec && !results.empty())
+            return results->endpoint();
+    }
+    return std::nullopt;
+}
 
 // Try to detect system proxy from GNOME gsettings
 static std::string detectGnomeProxy() {
@@ -203,11 +239,6 @@ void HttpResolver::enableTcpKeepalive(asio::ip::tcp::socket& socket) {
     setsockopt(socket.native_handle(), IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(keepcnt));
 }
 
-// Per-thread circuit breaker for proxy
-static thread_local int tlsProxyErrors = 0;
-static thread_local std::chrono::steady_clock::time_point tlsCircuitOpen;
-static thread_local bool tlsCircuitTripped = false;
-
 static size_t readHttpBody(const std::vector<uint8_t>& rawResp,
                            std::string& bodyOut, std::string& statusOut) {
     std::string respStr(reinterpret_cast<const char*>(rawResp.data()), rawResp.size());
@@ -311,11 +342,13 @@ bool HttpResolver::openFunc(const std::string& host, const std::string& port,
         }
     }
 
-    tcp::resolver resolver(tmpCtx);
-    auto results = resolver.resolve(host, port, ec);
-    if (ec) return false;
+    auto ep = resolveHost(tmpCtx, host, static_cast<uint16_t>(std::stoi(port)));
+    if (!ep) {
+        ec = boost::asio::error::host_not_found;
+        return false;
+    }
 
-    asio::connect(stream.next_layer(), results.begin(), results.end(), ec);
+    asio::connect(stream.next_layer(), &*ep, &*ep + 1, ec);
     if (ec) return false;
 
     { int flag = 1; setsockopt(stream.next_layer().native_handle(), SOL_TCP, TCP_NODELAY, &flag, sizeof(flag)); }
@@ -367,7 +400,10 @@ void HttpResolver::init() {
 }
 
 void HttpResolver::reload() {
-    // Read proxy from ~/.lynx-proxy (exists + non-empty = use it, else direct)
+    // Priority: 1) ~/.lynx-proxy 2) env var 3) GNOME gsettings 4) direct
+    proxy_.clear();
+
+    // 1) ~/.lynx-proxy file (written by switch-network.sh or NM dispatcher)
     std::string home;
     const char* homeEnv = std::getenv("HOME");
     if (homeEnv) home = homeEnv;
@@ -380,13 +416,12 @@ void HttpResolver::reload() {
             line.pop_back();
         if (!line.empty()) {
             proxy_ = line;
-            LOG_INFO("Reload: proxy set to " + proxy_);
-        } else {
-            proxy_.clear();
-            LOG_INFO("Reload: no proxy configured (empty ~/.lynx-proxy)");
+            LOG_INFO("Reload: proxy set to " + proxy_ + " (from ~/.lynx-proxy)");
         }
-    } else {
-        // Check env var as fallback
+    }
+
+    // 2) env var
+    if (proxy_.empty()) {
         const char* envProxy = std::getenv("https_proxy");
         if (!envProxy) envProxy = std::getenv("HTTPS_PROXY");
         if (!envProxy) envProxy = std::getenv("http_proxy");
@@ -394,10 +429,20 @@ void HttpResolver::reload() {
         if (envProxy && envProxy[0]) {
             proxy_ = envProxy;
             LOG_INFO("Reload: proxy set to " + proxy_ + " (from env var)");
-        } else {
-            proxy_.clear();
-            LOG_INFO("Reload: no proxy configured (direct)");
         }
+    }
+
+    // 3) GNOME proxy
+    if (proxy_.empty()) {
+        auto gnome = detectGnomeProxy();
+        if (!gnome.empty()) {
+            proxy_ = gnome;
+            LOG_INFO("Reload: proxy set to " + proxy_ + " (from GNOME settings)");
+        }
+    }
+
+    if (proxy_.empty()) {
+        LOG_INFO("Reload: no proxy configured (direct)");
     }
 
     const char* noProxy = std::getenv("no_proxy");
@@ -514,11 +559,13 @@ bool HttpResolver::Connection::open(const std::string& proxyHost,
         { int syn = 2; setsockopt(stream->next_layer().native_handle(), IPPROTO_TCP, TCP_SYNCNT, &syn, sizeof(syn)); }
     }
 
-    tcp::resolver resolver(ctx);
-    auto results = resolver.resolve(host, port, ec);
-    if (ec) return false;
+    auto ep = resolveHost(ctx, host, static_cast<uint16_t>(std::stoi(port)));
+    if (!ep) {
+        ec = boost::asio::error::host_not_found;
+        return false;
+    }
 
-    asio::connect(stream->next_layer(), results.begin(), results.end(), ec);
+    asio::connect(stream->next_layer(), &ep.value(), &ep.value() + 1, ec);
     if (ec) return false;
 
     { int flag = 1; setsockopt(stream->next_layer().native_handle(), SOL_TCP, TCP_NODELAY, &flag, sizeof(flag)); }
@@ -653,28 +700,6 @@ DnsMessagePtr HttpResolver::query(const DnsMessage& req, bool allowFanOut) {
     for (auto& pool : pools_) totalConns += pool.connections.size();
     PerfMonitor::instance().recordConnUse(countConnected(), totalConns);
     auto t0 = std::chrono::steady_clock::now();
-
-    // Circuit breaker: if proxy errors spiked, bypass proxy temporarily
-    if (useProxy_ && tlsCircuitTripped) {
-        auto now = std::chrono::steady_clock::now();
-        if (now - tlsCircuitOpen < std::chrono::seconds(60)) {
-            LOG_DEBUG("Circuit breaker: bypassing proxy for 60s");
-            bool savedUseProxy = useProxy_;
-            useProxy_ = false;
-            auto result = doPost(req, allowFanOut);
-            useProxy_ = savedUseProxy;
-            if (result) {
-                auto dt = std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::steady_clock::now() - t0);
-                PerfMonitor::instance().recordLatency(dt);
-                return result;
-            }
-        } else {
-            tlsCircuitTripped = false;
-            tlsProxyErrors = 0;
-            LOG_INFO("Circuit breaker: re-enabling proxy after cooldown");
-        }
-    }
 
     auto result = doPost(req, allowFanOut);
     if (!result && !fallback_.empty()) {
@@ -862,18 +887,11 @@ DnsMessagePtr HttpResolver::doPost(const DnsMessage& req, bool allowFanOut) {
                 conn->inUse = false;
                 connCtrl_.notifyUsed(conn->stream.get());
                 if (conn->poolRef) conn->poolRef->successes++;
-                tlsProxyErrors = 0;
                 return reply;
             }
             connCtrl_.notifyFailure(conn->stream.get());
             if (conn->poolRef) conn->poolRef->errors++;
             conn->inUse = false;
-
-            if (useProxy_ && ++tlsProxyErrors > 5) {
-                tlsCircuitTripped = true;
-                tlsCircuitOpen = std::chrono::steady_clock::now();
-                LOG_WARN("Circuit breaker: proxy error spike, bypassing for 60s");
-            }
         }
         if (attempt < 4) {
             std::this_thread::sleep_for(std::chrono::milliseconds(backoffMs));
@@ -903,17 +921,11 @@ DnsMessagePtr HttpResolver::doPost(const DnsMessage& req, bool allowFanOut) {
                 if (conn->poolRef) conn->poolRef->successes++;
                 for (auto& p : pools_)
                     openPoolAsync(p);
-                tlsProxyErrors = 0;
                 return reply;
             }
             connCtrl_.notifyFailure(conn->stream.get());
             if (conn->poolRef) conn->poolRef->errors++;
             conn->inUse = false;
-
-            if (useProxy_ && ++tlsProxyErrors > 5) {
-                tlsCircuitTripped = true;
-                tlsCircuitOpen = std::chrono::steady_clock::now();
-            }
             break;
         }
     }

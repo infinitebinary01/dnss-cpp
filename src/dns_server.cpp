@@ -150,7 +150,7 @@ DnsServer::~DnsServer() {
 void DnsServer::stop() {
     running_ = false;
     sys::error_code ec;
-    // Self-connect to unblock TCP accept() (same approach as MonitorServer)
+    // Self-connect to unblock TCP accept()
     auto colon = addr_.find(':');
     if (colon != std::string::npos && colon + 1 < addr_.size()) {
         try {
@@ -165,6 +165,21 @@ void DnsServer::stop() {
     udpSocket_.close(ec);
     ioCtx_.stop();
     dnsPool().shutdown();
+
+    // Send dummy UDP packets to unblock worker receive_from() calls.
+    // Each kicker binds to its own ephemeral port so SO_REUSEPORT
+    // distributes them across all workers (not just one).
+    for (int i = 0; i < NUM_WORKERS; i++) {
+        try {
+            asio::io_context tmp;
+            asio::ip::udp::socket kicker(tmp);
+            kicker.open(asio::ip::udp::v4());
+            kicker.bind(asio::ip::udp::endpoint(asio::ip::udp::v4(), 0));
+            kicker.send_to(asio::buffer("", 1),
+                asio::ip::udp::endpoint(asio::ip::make_address("127.0.0.1"),
+                    static_cast<uint16_t>(std::stoi(addr_.substr(colon + 1)))));
+        } catch (...) {}
+    }
 
     for (auto& t : workerThreads_)
         if (t.joinable()) t.join();

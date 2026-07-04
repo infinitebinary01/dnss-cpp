@@ -6,8 +6,10 @@
 #include <memory>
 #include <thread>
 #include <atomic>
-#include <csignal>
-#include <cstring>
+#include <signal.h>
+#include <string.h>
+#include <sys/types.h>
+#include <unistd.h>
 #include <map>
 #include <sstream>
 #include <vector>
@@ -30,19 +32,21 @@ static std::atomic<bool> reloadRequested{false};
 static std::string configFilePath;
 static std::shared_ptr<DnsServer> dnsServer;
 static std::shared_ptr<HttpsServer> httpsServer;
-static std::unique_ptr<MonitorServer> monitorServer;
+static std::shared_ptr<MonitorServer> monitorServer;
 static std::shared_ptr<Resolver> resolverRef;
 
-static void signalHandler(int sig) {
+static void signalHandler(int sig, siginfo_t* info, void*) {
     if (sig == SIGHUP) {
         LOG_INFO("SIGHUP received — re-reading config...");
         reloadRequested = true;
         return;
     }
     draining = true;
-    LOG_INFO("Signal received, draining...");
+    pid_t senderPid = info ? info->si_pid : 0;
+    LOG_INFO("Signal received (sig=" + std::to_string(sig) + " from PID=" + std::to_string(senderPid) + "), draining...");
     std::thread([]() {
         std::this_thread::sleep_for(std::chrono::seconds(3));
+        LOG_INFO("Signal handler thread: setting running=false");
         running = false;
     }).detach();
 }
@@ -147,9 +151,24 @@ static std::map<std::string, std::string> parseJson(const std::string& path) {
     return kv;
 }
 
+static std::string findWwwDir(const char* argv0) {
+    std::string bin(argv0);
+    auto slash = bin.rfind('/');
+    if (slash != std::string::npos) {
+        std::string dir = bin.substr(0, slash + 1) + "../www";
+        struct stat st;
+        if (stat(dir.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+            return dir;
+    }
+    std::string dir = "/usr/local/share/lynx/www";
+    struct stat st;
+    if (stat(dir.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+        return dir;
+    return bin.substr(0, bin.rfind('/') + 1) + "www";
+}
+
 static std::string findLogo(const char* argv0) {
     std::string tryPath;
-    // Check relative to binary directory
     std::string bin(argv0);
     auto slash = bin.rfind('/');
     if (slash != std::string::npos) {
@@ -157,7 +176,6 @@ static std::string findLogo(const char* argv0) {
         struct stat st;
         if (stat(tryPath.c_str(), &st) == 0) return tryPath;
     }
-    // Check installed path
     tryPath = "/usr/local/share/lynx/logo.png";
     struct stat st;
     if (stat(tryPath.c_str(), &st) == 0) return tryPath;
@@ -279,16 +297,21 @@ int main(int argc, char* argv[]) {
         setenv("no_proxy", cfg.noProxy.c_str(), 1);
     }
 
-    std::signal(SIGINT, signalHandler);
-    std::signal(SIGTERM, signalHandler);
-    std::signal(SIGHUP, signalHandler);
+    struct sigaction sa;
+    std::memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = signalHandler;
+    sa.sa_flags = SA_SIGINFO;
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
+    sigaction(SIGHUP, &sa, nullptr);
 
     AutoTuner::instance().start();
 
     // Start monitoring server
-    std::string monAddr = cfg.monitoringListenAddr.empty() ? ":8080" : cfg.monitoringListenAddr;
+    std::string monAddr = cfg.monitoringListenAddr.empty() ? "127.0.0.1:8080" : cfg.monitoringListenAddr;
     std::string logoPath = findLogo(argv[0]);
-    monitorServer = std::make_unique<MonitorServer>(monAddr, logoPath);
+    std::string wwwRoot = findWwwDir(argv[0]);
+    monitorServer = std::make_shared<MonitorServer>(monAddr, wwwRoot, logoPath);
     monitorServer->start();
 
     if (!cfg.enableDnsToHttps && !cfg.enableHttpsToDns) {
@@ -397,12 +420,14 @@ int main(int argc, char* argv[]) {
                 if (p.threadPoolLoad == 0 && p.connUtilization == 0) break;
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
+            LOG_INFO("Drain complete, setting running=false (activeConns=" + std::to_string(PerfMonitor::instance().snapshot().activeConnections) + ")");
             running = false;
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
+    LOG_INFO("Main loop exited — running=" + std::string(running ? "true" : "false") + " draining=" + std::string(draining ? "true" : "false"));
     LOG_INFO("Shutting down...");
 
     // Graceful shutdown

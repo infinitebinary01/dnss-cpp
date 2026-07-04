@@ -75,7 +75,7 @@ if(HAS_SSE42)
 endif()
 
 # LTO / optimization
-target_compile_options(lynx PRIVATE -O3 -flto -march=native)
-target_link_options(lynx PRIVATE -O3 -flto -march=native)
+target_compile_options(lynx PRIVATE -O1 -fsanitize=address -fno-omit-frame-pointer -g)
+target_link_options(lynx PRIVATE -fsanitize=address)
 
 install(TARGETS lynx RUNTIME DESTINATION bin)

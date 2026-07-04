@@ -11,18 +11,22 @@
 #include <ctime>
 #include <chrono>
 #include <fstream>
+#include <filesystem>
 
 namespace sys = boost::system;
-
+namespace fs = std::filesystem;
 using namespace std::chrono;
 
-MonitorServer::MonitorServer(const std::string& addr, const std::string& logoPath) : addr_(addr), logoPath_(logoPath) {
+MonitorServer::MonitorServer(const std::string& addr,
+                             const std::string& wwwRoot,
+                             const std::string& logoPath)
+    : addr_(addr), wwwRoot_(wwwRoot), logoPath_(logoPath) {
     auto colon = addr.find(':');
     if (colon == std::string::npos) {
         LOG_ERROR("Invalid monitoring address: " + addr);
         return;
     }
-    std::string host = colon > 0 ? addr.substr(0, colon) : "0.0.0.0";
+    std::string host = colon > 0 ? addr.substr(0, colon) : "127.0.0.1";
     std::string port = addr.substr(colon + 1);
     port_ = std::stoi(port);
 
@@ -38,6 +42,7 @@ MonitorServer::MonitorServer(const std::string& addr, const std::string& logoPat
     }
     if (ec) {
         LOG_ERROR("Monitor server bind failed on " + addr + ": " + ec.message());
+        acceptor_.close(ec);
     }
 }
 
@@ -48,14 +53,13 @@ MonitorServer::~MonitorServer() {
 void MonitorServer::start() {
     if (!acceptor_.is_open()) return;
     running_ = true;
-    acceptThread_ = std::thread([this] { acceptLoop(); });
+    acceptThread_ = std::thread([self = shared_from_this()] { self->acceptLoop(); });
     LOG_INFO("Monitor server listening on " + addr_);
 }
 
 void MonitorServer::stop() {
     running_ = false;
     sys::error_code ec;
-    // Self-connect to unblock accept() if close() doesn't wake it (POSIX-reliable)
     if (port_ > 0) {
         try {
             asio::io_context tmpCtx;
@@ -70,8 +74,9 @@ void MonitorServer::stop() {
 }
 
 void MonitorServer::acceptLoop() {
-    try {
-        while (running_) {
+    auto self = shared_from_this();
+    while (running_) {
+        try {
             auto sock = std::make_shared<asio::ip::tcp::socket>(ctx_);
             sys::error_code ec;
             acceptor_.accept(*sock, ec);
@@ -79,13 +84,13 @@ void MonitorServer::acceptLoop() {
                 if (running_) {
                     LOG_DEBUG("Monitor accept error: " + ec.message());
                 }
-                break;
+                continue;
             }
-            std::thread t(&MonitorServer::handleRequest, this, sock);
+            std::thread t([self, sock] { self->handleRequest(sock); });
             t.detach();
+        } catch (const std::exception& e) {
+            LOG_ERROR("Monitor server error: " + std::string(e.what()));
         }
-    } catch (const std::exception& e) {
-        LOG_ERROR("Monitor server error: " + std::string(e.what()));
     }
 }
 
@@ -101,6 +106,12 @@ void MonitorServer::handleRequest(std::shared_ptr<asio::ip::tcp::socket> sock) {
         {
             std::istringstream ss(req);
             ss >> method >> path;
+        }
+
+        // SSE stream — push JSON every 1s, keep connection alive
+        if (path == "/api/stream") {
+            handleStream(sock);
+            return;
         }
 
         std::string body;
@@ -119,10 +130,6 @@ void MonitorServer::handleRequest(std::shared_ptr<asio::ip::tcp::socket> sock) {
             body = renderJson();
             contentType = "application/json";
             statusLine = "HTTP/1.1 200 OK\r\n";
-        } else if (path == "/" || path.empty()) {
-            body = renderDashboard();
-            contentType = "text/html; charset=utf-8";
-            statusLine = "HTTP/1.1 200 OK\r\n";
         } else if (path == "/logo.png" && !logoPath_.empty()) {
             std::ifstream f(logoPath_, std::ios::binary | std::ios::ate);
             if (f) {
@@ -138,9 +145,16 @@ void MonitorServer::handleRequest(std::shared_ptr<asio::ip::tcp::socket> sock) {
                 statusLine = "HTTP/1.1 404 Not Found\r\n";
             }
         } else {
-            body = "404 Not Found";
-            contentType = "text/plain";
-            statusLine = "HTTP/1.1 404 Not Found\r\n";
+            std::string servePath = (path == "/") ? "/index.html" : path;
+            body = serveFile(servePath);
+            if (!body.empty()) {
+                contentType = contentTypeFor(servePath);
+                statusLine = "HTTP/1.1 200 OK\r\n";
+            } else {
+                body = "404 Not Found";
+                contentType = "text/plain";
+                statusLine = "HTTP/1.1 404 Not Found\r\n";
+            }
         }
 
         std::ostringstream resp;
@@ -155,8 +169,64 @@ void MonitorServer::handleRequest(std::shared_ptr<asio::ip::tcp::socket> sock) {
     } catch (const std::exception& e) {
         LOG_DEBUG("Monitor request error: " + std::string(e.what()));
     }
-    sys::error_code ec;
-    sock->close(ec);
+    try {
+        sys::error_code ec;
+        sock->close(ec);
+    } catch (...) {}
+}
+
+void MonitorServer::handleStream(std::shared_ptr<asio::ip::tcp::socket> sock) {
+    try {
+        std::string header =
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/event-stream\r\n"
+            "Cache-Control: no-cache\r\n"
+            "Connection: keep-alive\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "\r\n";
+        asio::write(*sock, asio::buffer(header));
+
+        while (running_) {
+            std::string json = renderJson();
+            std::string msg = "data: " + json + "\n\n";
+            sys::error_code ec;
+            asio::write(*sock, asio::buffer(msg), ec);
+            if (ec) break;
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    } catch (...) {}
+    try {
+        sys::error_code ec;
+        sock->close(ec);
+    } catch (...) {}
+}
+
+std::string MonitorServer::serveFile(const std::string& path) {
+    // Sanitize path — prevent directory traversal
+    std::string clean = path;
+    if (clean.find("..") != std::string::npos) return {};
+
+    std::string filePath = wwwRoot_ + clean;
+    if (!fs::exists(filePath) || !fs::is_regular_file(filePath)) return {};
+
+    std::ifstream f(filePath, std::ios::binary);
+    if (!f) return {};
+    std::string content((std::istreambuf_iterator<char>(f)), {});
+    return content;
+}
+
+std::string MonitorServer::contentTypeFor(const std::string& path) {
+    auto dot = path.rfind('.');
+    if (dot == std::string::npos) return "application/octet-stream";
+    std::string ext = path.substr(dot);
+    if (ext == ".html") return "text/html; charset=utf-8";
+    if (ext == ".css")  return "text/css; charset=utf-8";
+    if (ext == ".js")   return "application/javascript; charset=utf-8";
+    if (ext == ".json") return "application/json";
+    if (ext == ".png")  return "image/png";
+    if (ext == ".svg")  return "image/svg+xml";
+    if (ext == ".ico")  return "image/x-icon";
+    return "application/octet-stream";
 }
 
 std::string MonitorServer::htmlEscape(const std::string& s) {
@@ -179,258 +249,6 @@ static std::string timeStr() {
     std::ostringstream ss;
     ss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
     return ss.str();
-}
-
-std::string MonitorServer::renderDashboard() {
-    return R"foo(<!DOCTYPE html>
-<html>
-<head>
-<title>Lynx DoH DNS v0.2</title>
-<meta charset='utf-8'>
-<style>
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
-*{margin:0;padding:0;box-sizing:border-box;}
-body{font-family:'JetBrains Mono',monospace;background:#4a4d55;color:#d0cec8;padding:20px;overflow-x:hidden;min-height:100vh;}
-/* Matrix rain canvas */
-#matrix{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;pointer-events:none;opacity:0.05;}
-.container{position:relative;z-index:1;max-width:1200px;margin:0 auto;}
-.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;padding:12px 16px;border:1px solid #5a5d65;background:rgba(74,77,85,0.9);}
-.header h1{font-size:18px;font-weight:700;color:#00ff41;text-shadow:0 0 10px rgba(0,255,65,0.3);}
-.header h1::before{content:'> ';color:#0ae;}.header .ts{color:#889096;font-size:12px;}
-.header .ts span{color:#00ff41;}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:16px;}
-.card{background:rgba(60,63,72,0.9);border:1px solid #5a5d65;padding:14px 16px;position:relative;overflow:hidden;}
-.card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,#0ae,transparent);}
-.card h2{font-size:10px;font-weight:700;color:#889096;text-transform:uppercase;letter-spacing:2px;margin-bottom:10px;}
-.card h2::after{content:' []';color:#00ff41;font-size:8px;}
-.stat-row{display:flex;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:1px solid rgba(26,31,41,0.5);}
-.stat-row:last-child{border-bottom:none;}
-.stat-label{color:#889096;}.stat-value{font-weight:700;font-variant-numeric:tabular-nums;}
-.good{color:#00ff41;text-shadow:0 0 6px rgba(0,255,65,0.3);}
-.warn{color:#e6db74;text-shadow:0 0 6px rgba(230,219,116,0.2);}
-.bad{color:#ff5555;text-shadow:0 0 6px rgba(255,85,85,0.3);}
-.cyan{color:#0ae;text-shadow:0 0 6px rgba(0,170,238,0.2);}
-.magenta{color:#ff79c6;text-shadow:0 0 6px rgba(255,121,198,0.2);}
-/* Bar charts */
-.bar-track{background:#1a1f29;height:4px;border-radius:2px;margin:6px 0;overflow:hidden;}
-.bar-fill{height:100%;border-radius:2px;transition:width 0.5s ease;}
-.bar-good{background:#00ff41;}.bar-warn{background:#e6db74;}.bar-bad{background:#ff5555;}.bar-cyan{background:#0ae;}
-.bottom-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;}
-.footer{margin-top:16px;padding:10px 16px;border:1px solid #5a5d65;font-size:11px;color:#889096;background:rgba(60,63,72,0.9);}
-.footer a{color:#0ae;text-decoration:none;margin-right:20px;}.footer a:hover{text-shadow:0 0 8px rgba(0,170,238,0.5);}
-/* Sparklines */
-.sparkline{display:flex;align-items:flex-end;gap:2px;height:30px;padding:4px 0;}
-.sparkline .bar{width:6px;border-radius:1px;transition:height 0.3s ease;min-height:2px;}
-</style>
-</head>
-<body>
-<canvas id='matrix'></canvas>
-<div class='container'>
-<div class='header'>
-<span style='display:flex;align-items:center;gap:10px'><img src='/logo.png' style='height:32px;border-radius:4px'><span>Lynx DoH DNS</span></span>
-<div class='ts'>SYS::UPTIME <span id='ts'>--:--:--</span></div>
-</div>
-
-<div class='grid'>
-<div class='card'>
-<h2>LATENCY</h2>
-<div class='stat-row'><span class='stat-label'>AVG</span><span class='stat-value good' id='lat-avg'>--</span></div>
-<div class='stat-row'><span class='stat-label'>P95</span><span class='stat-value' id='lat-p95'>--</span></div>
-<div class='stat-row'><span class='stat-label'>ERRORS</span><span class='stat-value good' id='err-rate'>--</span></div>
-<div class='stat-row'><span class='stat-label'>QPS</span><span class='stat-value cyan' id='qps'>--</span></div>
-</div>
-
-<div class='card'>
-<h2>CACHE TIERS</h2>
-<div class='stat-row'><span class='stat-label'>L1 TURBO</span><span class='stat-value good' id='turbo-hit'>--</span></div>
-<div class='stat-row'><span class='stat-label'>L2 MAIN</span><span class='stat-value' id='l2-hit'>--</span></div>
-<div class='stat-row'><span class='stat-label'>TOTAL HIT</span><span class='stat-value' id='cache-hit'>--</span></div>
-<div class='stat-row'><span class='stat-label'>REFRESH</span><span class='stat-value cyan' id='cache-refresh'>--</span></div>
-</div>
-
-<div class='card'>
-<h2>CONNECTIONS</h2>
-<div class='stat-row'><span class='stat-label'>ACTIVE</span><span class='stat-value' id='conn-active'>--</span></div>
-<div class='stat-row'><span class='stat-label'>UTILIZATION</span><span class='stat-value good' id='conn-util'>--</span></div>
-<div class='bar-track'><div class='bar-fill bar-good' id='conn-bar' style='width:0%'></div></div>
-<div class='stat-row' style='margin-top:4px'><span class='stat-label'>TUNER GROWTH</span><span class='stat-value cyan' id='tuner-growth'>--</span></div>
-</div>
-
-<div class='card'>
-<h2>THREAD POOL</h2>
-<div class='stat-row'><span class='stat-label'>PENDING</span><span class='stat-value' id='pool-pending'>--</span></div>
-<div class='stat-row'><span class='stat-label'>ALLOCATED</span><span class='stat-value cyan' id='pool-threads'>--</span></div>
-<div class='bar-track'><div class='bar-fill bar-cyan' id='pool-bar' style='width:0%'></div></div>
-</div>
-
-<div class='card'>
-<h2>AUTO-TUNER</h2>
-<div class='stat-row'><span class='stat-label'>CONNS</span><span class='stat-value' id='tuner-conn'>--</span></div>
-<div class='stat-row'><span class='stat-label'>THREADS</span><span class='stat-value' id='tuner-threads'>--</span></div>
-<div class='stat-row'><span class='stat-label'>REFRESH</span><span class='stat-value' id='tuner-refresh'>--</span></div>
-<div class='stat-row'><span class='stat-label'>FAN-OUT</span><span class='stat-value' id='tuner-fanout'>--</span></div>
-<div class='stat-row'><span class='stat-label'>LAT TREND</span><span class='stat-value' id='tuner-trend'>--</span></div>
-</div>
-
-<div class='card' style='grid-column:span 2'>
-<h2>PREDICTED LATENCY &mdash; 60s WINDOW</h2>
-<div class='sparkline' id='latency-spark'></div>
-</div>
-</div>
-
-<div class='bottom-row'>
-<div class='card'>
-<h2>TOP DOMAINS BY LATENCY</h2>
-<div id='top-domains'><div class='stat-row'><span class='stat-label'>collecting...</span><span class='stat-value'>--</span></div></div>
-</div>
-<div class='card'>
-<h2>SYSTEM</h2>
-<div class='stat-row'><span class='stat-label'>UPTIME</span><span class='stat-value good' id='sys-uptime'>--</span></div>
-<div class='stat-row'><span class='stat-label'>TOTAL QUERIES</span><span class='stat-value cyan' id='sys-queries'>--</span></div>
-<div class='stat-row'><span class='stat-label'>UDP WORKERS</span><span class='stat-value' id='sys-workers'>2</span></div>
-<div class='stat-row'><span class='stat-label'>TCP</span><span class='stat-value' id='sys-tcp'>--</span></div>
-<div class='stat-row'><span class='stat-label'>MODE</span><span class='stat-value good'>PROXY</span></div>
-</div>
-</div>
-
-<div class='footer'>
-<a href='/metrics'>[ PROMETHEUS ]</a>
-<a href='/api/stats'>[ JSON ]</a>
-<a href='/health'>[ HEALTH ]</a>
-<a href='https://github.com/infinitebinary01/dnss-cpp'>[ GITHUB ]</a>
-<span style='float:right'>Lynx DoH DNS v0.2</span>
-</div>
-</div>
-
-<script>
-// Matrix rain
-var canvas = document.getElementById('matrix');
-var ctx = canvas.getContext('2d');
-canvas.width = window.innerWidth;
-canvas.height = window.innerHeight;
-var cols = Math.floor(canvas.width / 14);
-var drops = Array(cols).fill(1);
-var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<>/{}[]|~';
-function drawMatrix() {
-  ctx.fillStyle = 'rgba(74,77,85,0.07)';
-  ctx.fillRect(0,0,canvas.width,canvas.height);
-  ctx.fillStyle = '#00ff41';
-  ctx.font = '14px monospace';
-  for(var i=0;i<drops.length;i++){
-    var text = chars[Math.floor(Math.random()*chars.length)];
-    ctx.fillText(text,i*14,drops[i]*14);
-    if(drops[i]*14>canvas.height && Math.random()>0.975) drops[i]=0;
-    drops[i]++;
-  }
-}
-setInterval(drawMatrix,50);
-
-// Latency sparkline history (60 points)
-var latHistory = [];
-function update() {
-  var r = new XMLHttpRequest();
-  r.onload = function() {
-    if (r.status !== 200) return;
-    var d = JSON.parse(r.responseText);
-    var ts = new Date().toISOString().slice(11,19);
-    function q(id) { return document.getElementById(id); }
-    function cls(id, c) { q(id).className = c; }
-
-    q('ts').textContent = ts;
-    var avg = d.latency.avg_ms, p95 = d.latency.p95_ms;
-    var er = d.errors.rate, hr = d.cache.hit_rate, thr = d.cache.turbo_hit_rate;
-
-    // Latency
-    q('lat-avg').textContent = (avg < 1 ? avg.toFixed(2) : avg.toFixed(1)) + 'ms';
-    cls('lat-avg', avg < 100 ? 'good' : avg < 500 ? 'warn' : 'bad');
-    q('lat-p95').textContent = (p95 < 1 ? p95.toFixed(2) : p95.toFixed(1)) + 'ms';
-    cls('lat-p95', p95 < 200 ? 'good' : p95 < 1000 ? 'warn' : 'bad');
-    q('err-rate').textContent = (er*100).toFixed(2) + '%';
-    cls('err-rate', er < 0.03 ? 'good' : 'bad');
-
-    // Cache
-    var l2r = Math.max(0, hr - thr);
-    q('cache-hit').textContent = (hr*100).toFixed(1) + '%';
-    cls('cache-hit', hr > 0.5 ? 'good' : 'warn');
-    q('turbo-hit').textContent = (thr*100).toFixed(1) + '%';
-    cls('turbo-hit', thr > 0.3 ? 'good' : 'warn');
-    q('l2-hit').textContent = (l2r*100).toFixed(1) + '%';
-    cls('l2-hit', l2r > 0.3 ? 'good' : 'warn');
-
-    // Connections
-    var active = d.connections.active, total = d.connections.recommended;
-    var util = d.connections.utilization;
-    q('conn-active').textContent = active + ' / ' + total;
-    q('conn-util').textContent = (util*100).toFixed(1) + '%';
-    var connBar = q('conn-bar');
-    connBar.style.width = Math.min(util*100,100) + '%';
-    connBar.className = 'bar-fill ' + (util < 0.7 ? 'bar-good' : util < 0.9 ? 'bar-warn' : 'bar-bad');
-
-    // Thread pool
-    var pending = d.thread_pool.pending, threads = d.thread_pool.recommended;
-    q('pool-pending').textContent = pending;
-    q('pool-threads').textContent = threads;
-    var poolLoad = Math.min(pending / (threads||1), 1);
-    q('pool-bar').style.width = (poolLoad*100) + '%';
-
-    // Auto-tuner
-    q('tuner-conn').textContent = total;
-    q('tuner-threads').textContent = threads;
-    var refresh = d.auto_tuner.cache_refresh_pct;
-    q('tuner-refresh').textContent = refresh + '%';
-    q('tuner-fanout').textContent = d.auto_tuner.fan_out ? 'ON' : 'OFF';
-    cls('tuner-fanout', d.auto_tuner.fan_out ? 'good' : 'warn');
-
-    // Trend from predicted if available
-    if (d.auto_tuner.latency_trend !== undefined) {
-      q('tuner-trend').textContent = d.auto_tuner.latency_trend.toFixed(1);
-      cls('tuner-trend', d.auto_tuner.latency_trend < 5 ? 'good' : 'warn');
-    }
-
-    // QPS
-    q('qps').textContent = d.auto_tuner.qps !== undefined ? d.auto_tuner.qps.toFixed(1) + '/s' : '--';
-    q('tuner-growth').textContent = d.auto_tuner.connection_growth !== undefined ? '+' + d.auto_tuner.connection_growth_per_cycle + '/cycle' : '--';
-
-    // System
-    q('sys-queries').textContent = d.auto_tuner.total_queries !== undefined ? d.auto_tuner.total_queries.toLocaleString() : '--';
-
-    // Sparkline
-    latHistory.push(avg);
-    if(latHistory.length>60) latHistory.shift();
-    var spark = q('latency-spark');
-    var maxLat = Math.max(1, ...latHistory);
-    spark.innerHTML = latHistory.map(function(v){
-      var pct = Math.max(3,(v/maxLat)*100);
-      var c = v < 100 ? '#00ff41' : v < 500 ? '#e6db74' : '#ff5555';
-      return '<div class="bar" style="height:'+pct+'%;background:'+c+'"></div>';
-    }).join('');
-
-    // Top domains
-    if (d.top_domains && d.top_domains.length) {
-      var dd = q('top-domains');
-      dd.innerHTML = d.top_domains.slice(0,5).map(function(item){
-        var c = item.latency < 100 ? 'good' : item.latency < 500 ? 'warn' : 'bad';
-        return '<div class="stat-row"><span class="stat-label">' + item.domain + '</span><span class="stat-value ' + c + '">' + item.latency.toFixed(1) + 'ms</span></div>';
-      }).join('');
-    }
-
-    // Uptime: compute from start time
-    if (!this._start) this._start = Date.now();
-    var elapsed = Math.floor((Date.now() - this._start)/1000);
-    var h = String(Math.floor(elapsed/3600)).padStart(2,'0');
-    var m = String(Math.floor((elapsed%3600)/60)).padStart(2,'0');
-    var s = String(elapsed%60).padStart(2,'0');
-    q('sys-uptime').textContent = h+':'+m+':'+s;
-  };
-  r.open('GET', '/api/stats', true);
-  r.send();
-}
-update();
-setInterval(update, 2000);
-window.addEventListener('resize',function(){canvas.width=window.innerWidth;canvas.height=window.innerHeight;cols=Math.floor(canvas.width/14);});
-</script>
-</body>
-</html>)foo";
 }
 
 std::string MonitorServer::renderPrometheus() {
@@ -478,42 +296,41 @@ std::string MonitorServer::renderJson() {
     auto perf = PerfMonitor::instance().snapshot();
     auto& tuner = AutoTuner::instance();
 
-    std::ostringstream json;
-    json << std::fixed << std::setprecision(2);
-    json << "{\n"
-         << "  \"timestamp\": \"" << timeStr() << "\",\n"
-         << "  \"latency\": {\n"
-         << "    \"avg_ms\": " << perf.avgLatencyMs << ",\n"
-         << "    \"p95_ms\": " << perf.p95LatencyMs << "\n"
-         << "  },\n"
-         << "  \"cache\": {\n"
-         << "    \"hit_rate\": " << perf.cacheHitRate << ",\n"
-         << "    \"turbo_hit_rate\": " << perf.turboHitRate << "\n"
-         << "  },\n"
-         << "  \"errors\": {\n"
-         << "    \"rate\": " << perf.errorRate << "\n"
-         << "  },\n"
-         << "  \"connections\": {\n"
-         << "    \"active\": " << perf.activeConnections << ",\n"
-         << "    \"recommended\": " << tuner.recommendedConnections() << ",\n"
-         << "    \"utilization\": " << perf.connUtilization << "\n"
-         << "  },\n"
-         << "  \"thread_pool\": {\n"
-         << "    \"pending\": " << perf.threadPoolLoad << ",\n"
-         << "    \"recommended\": " << tuner.recommendedThreads() << "\n"
-         << "  },\n"
-         << "  \"auto_tuner\": {\n"
-         << "    \"cache_refresh_pct\": " << tuner.cacheRefreshThresholdPct() << ",\n"
-         << "    \"fan_out\": " << (tuner.fanOutEnabled() ? "true" : "false") << ",\n"
-         << "    \"latency_trend\": " << tuner.trendSlope() << ",\n"
-         << "    \"qps\": " << tuner.currentQps() << ",\n"
-         << "    \"connection_growth\": 0,\n"
-         << "    \"connection_growth_per_cycle\": 0,\n"
-         << "    \"total_queries\": " << PerfMonitor::instance().totalQueries() << "\n"
-         << "  },\n"
-         << "  \"top_domains\": [\n";
+    std::ostringstream j;
+    j << std::fixed << std::setprecision(2);
+    j << "{"
+      << "\"timestamp\":\"" << timeStr() << "\","
+      << "\"latency\":{"
+        << "\"avg_ms\":" << perf.avgLatencyMs << ","
+        << "\"p95_ms\":" << perf.p95LatencyMs
+      << "},"
+      << "\"cache\":{"
+        << "\"hit_rate\":" << perf.cacheHitRate << ","
+        << "\"turbo_hit_rate\":" << perf.turboHitRate
+      << "},"
+      << "\"errors\":{"
+        << "\"rate\":" << perf.errorRate
+      << "},"
+      << "\"connections\":{"
+        << "\"active\":" << perf.activeConnections << ","
+        << "\"recommended\":" << tuner.recommendedConnections() << ","
+        << "\"utilization\":" << perf.connUtilization
+      << "},"
+      << "\"thread_pool\":{"
+        << "\"pending\":" << perf.threadPoolLoad << ","
+        << "\"recommended\":" << tuner.recommendedThreads()
+      << "},"
+      << "\"auto_tuner\":{"
+        << "\"cache_refresh_pct\":" << tuner.cacheRefreshThresholdPct() << ","
+        << "\"fan_out\":" << (tuner.fanOutEnabled() ? "true" : "false") << ","
+        << "\"latency_trend\":" << tuner.trendSlope() << ","
+        << "\"qps\":" << tuner.currentQps() << ","
+        << "\"connection_growth\":0,"
+        << "\"connection_growth_per_cycle\":0,"
+        << "\"total_queries\":" << PerfMonitor::instance().totalQueries()
+      << "},"
+      << "\"top_domains\":[";
 
-    // Add top domains by latency
     auto domains = PerfMonitor::instance().getDomainLatencies();
     std::vector<std::pair<std::string, double>> sorted;
     for (auto& [name, dl] : domains) {
@@ -524,15 +341,14 @@ std::string MonitorServer::renderJson() {
 
     bool first = true;
     for (int i = 0; i < std::min(10, (int)sorted.size()); i++) {
-        if (!first) json << ",\n";
+        if (!first) j << ",";
         first = false;
-        json << "    {\"domain\": \"" << sorted[i].first
-             << "\", \"latency\": " << sorted[i].second << "}";
+        j << "{\"domain\":\"" << sorted[i].first
+          << "\",\"latency\":" << sorted[i].second << "}";
     }
 
-    json << "\n  ]\n"
-         << "}\n";
-    return json.str();
+    j << "]}";
+    return j.str();
 }
 
 std::string MonitorServer::renderHealth() {

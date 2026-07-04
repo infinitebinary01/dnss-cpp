@@ -64,10 +64,10 @@ private:
     int samplesCollected_ = 0;
 
     static constexpr size_t MAX_HISTORY = 150; // 5 min at 2s intervals
-    static constexpr int MIN_CONNS = 12;
-    static constexpr int MAX_CONNS = 128;
-    static constexpr int MIN_THREADS = 8;
-    static constexpr int MAX_THREADS = 32;
+    static constexpr int MIN_CONNS = 6;
+    static constexpr int MAX_CONNS = 16;
+    static constexpr int MIN_THREADS = 4;
+    static constexpr int MAX_THREADS = 16;
 
     double computeTrend();
     double computeVariance();

@@ -4,6 +4,7 @@
 #include "logger.hpp"
 #include <algorithm>
 #include <thread>
+#include <vector>
 
 uint64_t CachingResolver::turboHash(const CacheKey& k) {
     uint64_t h = 14695981039346656037ULL;
@@ -86,17 +87,22 @@ void CachingResolver::maintain() {
             while (running_) {
                 std::this_thread::sleep_for(std::chrono::seconds(10));
                 if (!running_) break;
-                std::unique_lock lock(cacheMutex_);
-                for (auto& [key, entry] : cache_) {
-                    if (running_ && needsRefresh(entry) &&
-                        entry.ttl >= minTTL) {
-                        lock.unlock();
-                        try {
-                            refreshEntry(key, entry);
-                        } catch (const std::exception& e) {
-                            LOG_ERROR("Cache refresh error for " + key.name + ": " + std::string(e.what()));
+                std::vector<std::pair<CacheKey, DnsQuestion>> toRefresh;
+                {
+                    std::unique_lock lock(cacheMutex_);
+                    for (auto& [key, entry] : cache_) {
+                        if (running_ && needsRefresh(entry) &&
+                            entry.ttl >= minTTL) {
+                            toRefresh.emplace_back(key, entry.question);
                         }
-                        lock.lock();
+                    }
+                }
+                for (auto& [key, question] : toRefresh) {
+                    if (!running_) break;
+                    try {
+                        refreshEntry(key, question);
+                    } catch (const std::exception& e) {
+                        LOG_ERROR("Cache refresh error for " + key.name + ": " + std::string(e.what()));
                     }
                 }
             }
@@ -129,18 +135,18 @@ bool CachingResolver::needsRefresh(const CacheEntry& entry) {
     return remainingPct < threshold;
 }
 
-void CachingResolver::refreshEntry(const CacheKey& key, CacheEntry& entry) {
+void CachingResolver::refreshEntry(const CacheKey& key, const DnsQuestion& question) {
     DnsMessage query;
     query.header.id = 0;
     query.header.flags = 0;
     query.header.setRd(true);
     query.header.qdcount = 1;
-    query.questions.push_back(entry.question);
+    query.questions.push_back(question);
 
     auto reply = back_->query(query);
     if (!reply) return;
 
-    if (shouldCache(entry.question, *reply)) {
+    if (shouldCache(question, *reply)) {
         auto ttl = computeCacheTTL(*reply);
         if (reply->header.rcode() == DnsRcode::NXDomain ||
             reply->header.rcode() == DnsRcode::ServFail ||

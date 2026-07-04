@@ -162,34 +162,46 @@ void AutoTuner::tune() {
     else consecutiveLowLoad_ = std::max(0, consecutiveLowLoad_ - 1);
 
     // --- Connection count ---
+    double util = perf.connUtilization;
     int curConn = connCount_.load();
     int newConn = curConn;
 
-    // Pre-emptive growth: if pool is moderately loaded AND trending up, grow before saturation
-    double util = perf.connUtilization;
-    if (util > 0.70 && trend > 3 && qps > 5 && curConn < MAX_CONNS) {
-        newConn = std::min(curConn + 2, MAX_CONNS);
-        LOG_DEBUG("AI-Tuner: +2 connections (" +
-                  std::to_string(newConn) + ") — pre-emptive (util=" +
-                  std::to_string(static_cast<int>(util * 100)) + "% trend=" + std::to_string(trend) + ")");
-    } else if (util > 0.85 && qps > 5 && curConn < MAX_CONNS) {
-        int growth = util > 0.95 ? 3 : 2;
-        newConn = std::min(curConn + growth, MAX_CONNS);
-        LOG_DEBUG("AI-Tuner: +" + std::to_string(growth) + " connections (" +
-                  std::to_string(newConn) + ") — utilization " +
-                  std::to_string(static_cast<int>(util * 100)) + "%");
-    } else if (err > 0.02 || consecutiveHighErr_ >= 2) {
-        newConn = std::min(curConn + 2, MAX_CONNS);
-        LOG_DEBUG("AI-Tuner: +2 connections (" + std::to_string(newConn) + ") — errors");
-    } else if (lat > 200 && qps > 5 && curConn < MAX_CONNS) {
-        newConn = std::min(curConn + 1, MAX_CONNS);
-        LOG_DEBUG("AI-Tuner: +1 connection (" + std::to_string(newConn) + ") — high latency under load");
-    } else if (trend > 5 && curConn < MAX_CONNS) {
-        newConn = std::min(curConn + 1, MAX_CONNS);
-        LOG_DEBUG("AI-Tuner: +1 connection (" + std::to_string(newConn) + ") — rising trend");
+    // Proxy saturation detection: if latency is high AND connections are already
+    // moderate, more connections will only congest the proxy further. Shrink instead.
+    bool proxySaturated = (lat > 500 && curConn > MIN_CONNS) || (lat > 1000);
+    if (proxySaturated) {
+        newConn = std::max(curConn - 1, MIN_CONNS);
+        if (newConn != curConn)
+            LOG_DEBUG("AI-Tuner: -1 connection (" +
+                      std::to_string(newConn) + ") — proxy saturated");
     } else if (consecutiveLowLoad_ >= 6 && curConn > MIN_CONNS) {
         newConn = curConn - 1;
         LOG_DEBUG("AI-Tuner: -1 connection (" + std::to_string(newConn) + ") — low load");
+    }
+
+    // Only grow when proxy is NOT saturated and latency is acceptable
+    if (!proxySaturated) {
+        if (util > 0.70 && trend > 3 && qps > 5 && curConn < MAX_CONNS) {
+            newConn = std::min(curConn + 2, MAX_CONNS);
+            LOG_DEBUG("AI-Tuner: +2 connections (" +
+                      std::to_string(newConn) + ") — pre-emptive (util=" +
+                      std::to_string(static_cast<int>(util * 100)) + "% trend=" + std::to_string(trend) + ")");
+        } else if (util > 0.85 && qps > 5 && curConn < MAX_CONNS) {
+            int growth = util > 0.95 ? 3 : 2;
+            newConn = std::min(curConn + growth, MAX_CONNS);
+            LOG_DEBUG("AI-Tuner: +" + std::to_string(growth) + " connections (" +
+                      std::to_string(newConn) + ") — utilization " +
+                      std::to_string(static_cast<int>(util * 100)) + "%");
+        } else if (err > 0.02 || consecutiveHighErr_ >= 2) {
+            newConn = std::min(curConn + 2, MAX_CONNS);
+            LOG_DEBUG("AI-Tuner: +2 connections (" + std::to_string(newConn) + ") — errors");
+        } else if (lat > 200 && qps > 5 && curConn < MAX_CONNS) {
+            newConn = std::min(curConn + 1, MAX_CONNS);
+            LOG_DEBUG("AI-Tuner: +1 connection (" + std::to_string(newConn) + ") — high latency under load");
+        } else if (trend > 5 && curConn < MAX_CONNS) {
+            newConn = std::min(curConn + 1, MAX_CONNS);
+            LOG_DEBUG("AI-Tuner: +1 connection (" + std::to_string(newConn) + ") — rising trend");
+        }
     }
 
     connCount_.store(newConn);
@@ -218,13 +230,15 @@ void AutoTuner::tune() {
     int curThreads = threadCount_.load();
     int newThreads = curThreads;
 
-    // Only grow if pool is consistently busy AND latency is elevated
-    if (load > 3 && lat > 100 && curThreads < MAX_THREADS) {
-        newThreads = std::min(curThreads + 2, MAX_THREADS);
-        LOG_DEBUG("AI-Tuner: +2 threads (" + std::to_string(newThreads) + ") — busy+latent");
-    } else if (load > 5 && curThreads < MAX_THREADS) {
-        newThreads = std::min(curThreads + 1, MAX_THREADS);
-        LOG_DEBUG("AI-Tuner: +1 thread (" + std::to_string(newThreads) + ") — busy");
+    // Don't grow threads when proxy is saturated (threads compete for bottleneck)
+    if (!proxySaturated) {
+        if (load > 3 && lat > 100 && curThreads < MAX_THREADS) {
+            newThreads = std::min(curThreads + 2, MAX_THREADS);
+            LOG_DEBUG("AI-Tuner: +2 threads (" + std::to_string(newThreads) + ") — busy+latent");
+        } else if (load > 5 && curThreads < MAX_THREADS) {
+            newThreads = std::min(curThreads + 1, MAX_THREADS);
+            LOG_DEBUG("AI-Tuner: +1 thread (" + std::to_string(newThreads) + ") — busy");
+        }
     }
 
     // Decrease threads when idle for sustained periods

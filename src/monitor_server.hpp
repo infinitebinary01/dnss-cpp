@@ -10,9 +10,11 @@
 
 namespace asio = boost::asio;
 
-class MonitorServer {
+class MonitorServer : public std::enable_shared_from_this<MonitorServer> {
 public:
-    MonitorServer(const std::string& addr, const std::string& logoPath = "");
+    MonitorServer(const std::string& addr,
+                  const std::string& wwwRoot,
+                  const std::string& logoPath = "");
     ~MonitorServer();
 
     void start();
@@ -21,7 +23,9 @@ public:
 private:
     void acceptLoop();
     void handleRequest(std::shared_ptr<asio::ip::tcp::socket> sock);
-    std::string renderDashboard();
+    void handleStream(std::shared_ptr<asio::ip::tcp::socket> sock);
+    std::string serveFile(const std::string& path);
+    std::string contentTypeFor(const std::string& path);
     std::string renderPrometheus();
     std::string renderJson();
     std::string renderHealth();
@@ -29,6 +33,7 @@ private:
 
     std::string addr_;
     int port_ = 0;
+    std::string wwwRoot_;
     std::string logoPath_;
     asio::io_context ctx_;
     asio::ip::tcp::acceptor acceptor_{ctx_};

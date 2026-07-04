@@ -23,6 +23,26 @@ h1{font-size:28px;font-weight:600;color:#1a73e8;margin-bottom:4px;}
 <p class='subtitle'>DNS-over-HTTPS proxy</p>
 
 <div class='version'>
+<h2>v0.4.0</h2>
+<p class='date'>2026-07-03</p>
+<ul>
+<li><b>Feature</b>: Hardcoded IP fallback for DoH upstream resolution (<code>http_resolver.cpp</code>) — lynx works on any network regardless of <code>/etc/resolv.conf</code>. Built-in IP table for <code>dns.google</code>, <code>cloudflare-dns.com</code>, <code>dns.quad9.net</code>.</li>
+<li><b>Feature</b>: <code>start.sh</code> unified launcher — <code>{start|stop|restart|status|logs}</code> manages the full lynx stack.</li>
+<li><b>Feature</b>: <code>lynx-watchdog.sh</code> — auto-detects WORK/HOME network every 10s by probing proxy TCP connect. Updates <code>~/.lynx-proxy</code> and <code>~/.proxy-env</code>, sends SIGHUP to lynx on switch.</li>
+<li><b>Feature</b>: <code>lynx-loop.sh</code> — persistent supervisor that restarts lynx on crash and ensures watchdog stays alive.</li>
+<li><b>Feature</b>: Dashboard SSE endpoint (<code>/api/stream</code>) — real-time JSON push every 1s with latency, cache, connection, and auto-tuner stats.</li>
+<li><b>Feature</b>: Modern web dashboard UI (<code>www/</code>) with uPlot charts, matrix rain background, and real-time stat cards.</li>
+<li><b>Fix</b>: heap-use-after-free in <code>CachingResolver::refreshEntry()</code> — refresh thread no longer iterates the cache map across unlock boundaries. Keys are collected while holding the lock, then processed after release, preventing concurrent <code>gcCache()</code> erasures from invalidating iterators.</li>
+<li><b>Fix</b>: heap-use-after-free in <code>MonitorServer</code> — inherits <code>enable_shared_from_this</code>; detached SSE handler threads capture <code>shared_from_this()</code> so the object stays alive until all threads finish.</li>
+<li><b>Fix</b>: DNS server UDP kicker — each kicker socket now binds to a unique ephemeral port so <code>SO_REUSEPORT</code> distributes dummy packets to all workers (previously all went to the same worker).</li>
+<li><b>Fix</b>: Monitor server misleading log on bind failure — <code>acceptor_.close()</code> now called so <code>start()</code> correctly skips "listening" message.</li>
+<li><b>Fix</b>: DNS resolution loop when system DNS routes through lynx — <code>resolveHost()</code> tries hardcoded IPs first to avoid recursing back into lynx via systemd-resolved.</li>
+<li><b>Fix</b>: Dashboard SSE error spam — removed broken health check path; SSE now properly streams JSON without disconnecting.</li>
+<li><b>Refactor</b>: Recovery architecture — lynx-loop is the sole process restarter (while loop); watchdog only monitors network state and updates proxy config. Both scripts use <code>set +e</code> for resilience.</li>
+</ul>
+</div>
+
+<div class='version'>
 <h2>v0.3.0</h2>
 <p class='date'>2026-07-01</p>
 <ul>
