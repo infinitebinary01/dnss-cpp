@@ -225,13 +225,35 @@ void AutoTuner::tune() {
         }
     }
 
-    // --- Thread pool ---
+    // --- Thread pool (turbo-aware) ---
     int load = perf.threadPoolLoad;
     int curThreads = threadCount_.load();
     int newThreads = curThreads;
 
-    // Don't grow threads when proxy is saturated (threads compete for bottleneck)
-    if (!proxySaturated) {
+    // Turbo mode: aggressive scaling when pending queue is deep
+    if (load > 50) {
+        turboCycles_ = std::min(turboCycles_ + 1, 10);
+        if (turboCycles_ >= 2) {
+            int growth = std::min(8, MAX_THREADS - curThreads);
+            if (growth > 0) {
+                newThreads = curThreads + growth;
+                LOG_DEBUG("AI-Tuner: TURBO +" + std::to_string(growth) +
+                          " threads (" + std::to_string(newThreads) + ") — load=" +
+                          std::to_string(load));
+            } else {
+                // Already at MAX_THREADS — stop accumulating
+                turboCycles_ = std::min(turboCycles_, 5);
+            }
+        }
+    } else if (load < 20) {
+        turboCycles_ = std::max(0, turboCycles_ - 1);
+    } else {
+        turboCycles_ = std::max(0, turboCycles_ - 1);
+    }
+
+    // Only use PID-based growth when not in turbo mode
+    bool inTurbo = (turboCycles_ >= 2);
+    if (!inTurbo && !proxySaturated) {
         if (load > 3 && lat > 100 && curThreads < MAX_THREADS) {
             newThreads = std::min(curThreads + 2, MAX_THREADS);
             LOG_DEBUG("AI-Tuner: +2 threads (" + std::to_string(newThreads) + ") — busy+latent");
@@ -241,13 +263,15 @@ void AutoTuner::tune() {
         }
     }
 
-    // Decrease threads when idle for sustained periods
-    if (load == 0 && consecutiveLowLoad_ >= 6 && curThreads > 8) {
-        newThreads = curThreads - 1;
-        LOG_DEBUG("AI-Tuner: -1 thread (" + std::to_string(newThreads) + ") — idle");
-    } else if (load < 3 && consecutiveLowLoad_ >= 12 && curThreads > 8) {
-        newThreads = curThreads - 1;
-        LOG_DEBUG("AI-Tuner: -1 thread (" + std::to_string(newThreads) + ") — low load");
+    // Only shrink when not in turbo
+    if (!inTurbo) {
+        if (load == 0 && consecutiveLowLoad_ >= 6 && curThreads > 8) {
+            newThreads = curThreads - 1;
+            LOG_DEBUG("AI-Tuner: -1 thread (" + std::to_string(newThreads) + ") — idle");
+        } else if (load < 3 && consecutiveLowLoad_ >= 12 && curThreads > 8) {
+            newThreads = curThreads - 1;
+            LOG_DEBUG("AI-Tuner: -1 thread (" + std::to_string(newThreads) + ") — low load");
+        }
     }
 
     // Clamp to valid range

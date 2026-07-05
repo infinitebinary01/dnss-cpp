@@ -67,7 +67,10 @@ private:
     static constexpr int MIN_CONNS = 6;
     static constexpr int MAX_CONNS = 16;
     static constexpr int MIN_THREADS = 4;
-    static constexpr int MAX_THREADS = 16;
+    static constexpr int MAX_THREADS = 48;
+
+    // Turbo threader state
+    int turboCycles_ = 0;
 
     double computeTrend();
     double computeVariance();

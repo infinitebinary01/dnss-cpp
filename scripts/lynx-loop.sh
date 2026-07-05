@@ -27,5 +27,5 @@ while true; do
     RC=$?
     log "lynx exited with code $RC, restarting in 2s..."
     ensure_watchdog
-    sleep 2
+    sleep 0.5
 done

@@ -23,6 +23,21 @@ h1{font-size:28px;font-weight:600;color:#1a73e8;margin-bottom:4px;}
 <p class='subtitle'>DNS-over-HTTPS proxy</p>
 
 <div class='version'>
+<h2>v0.6.0</h2>
+<p class='date'>2026-07-05</p>
+<ul>
+<li><b>Feature</b>: Turbo threader — aggressive thread pool scaling when pending queue exceeds 50 (<code>+8</code> threads/cycle, up to 48). Capped decay prevents prolonged PID suppression after load drops. (<code>AutoTuner</code>)</li>
+<li><b>Feature</b>: Backpressure in thread pool — <code>tryEnqueue()</code> rejects tasks when queue &ge; 2000. Rejected queries return SERVFAIL to client instead of silently dropping. (<code>ThreadPool</code>)</li>
+<li><b>Fix</b>: <code>ThreadPool::resize()</code> uses <code>liveCount_</code> instead of <code>workers_.size()</code> — after shrink, <code>workers_.size()</code> never decreased, so <code>resize()</code> refused to spawn new threads, permanently understaffing the pool. (<code>dns_server.cpp:59</code>)</li>
+<li><b>Fix</b>: <code>workerLoop()</code> double-decrement of <code>liveCount_</code> — <code>maybeShrink()</code> already decrements via CAS; the unconditional <code>fetch_sub(1)</code> at loop exit caused each shrink to remove 2 workers instead of 1. (<code>dns_server.cpp:109</code>)</li>
+<li><b>Fix</b>: <code>async_send_to</code> buffer use-after-free in <code>onUdpReceive</code> rejection path — <code>wire</code> was a local vector destroyed before the async operation completed. Captured via <code>shared_ptr</code>.</li>
+<li><b>Fix</b>: Uncaught exception from <code>DnsMessage::parse()</code> in <code>onUdpReceive</code> rejection path — wrapped in <code>try-catch</code>.</li>
+<li><b>Performance</b>: <code>ThreadPool::MAX_WORKERS</code> 32 → 64; <code>AutoTuner::MAX_THREADS</code> 16 → 48. Enables scaling to higher concurrency under load.</li>
+<li><b>Performance</b>: Restart window reduced from 2s to 0.5s in <code>lynx-loop.sh</code> — minimizes DNS downtime on crash.</li>
+</ul>
+</div>
+
+<div class='version'>
 <h2>v0.5.0</h2>
 <p class='date'>2026-07-04</p>
 <ul>

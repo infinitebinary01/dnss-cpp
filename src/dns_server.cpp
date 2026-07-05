@@ -32,6 +32,17 @@ public:
         { std::lock_guard<std::mutex> lk(m_); tasks_.push(std::move(f)); }
         cv_.notify_one();
     }
+    bool tryEnqueue(std::function<void()> f) {
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            if (tasks_.size() >= BACKPRESSURE_LIMIT)
+                return false;
+            tasks_.push(std::move(f));
+        }
+        cv_.notify_one();
+        return true;
+    }
+    size_t maxPending() const { return BACKPRESSURE_LIMIT; }
     size_t pending() const {
         std::lock_guard<std::mutex> lk(m_);
         return tasks_.size();
@@ -45,7 +56,8 @@ public:
         if (n < MIN_WORKERS) n = MIN_WORKERS;
         target_.store(n);
         std::lock_guard<std::mutex> lk(m_);
-        while (workers_.size() < n)
+        scrubWorkers();
+        while (liveCount_.load() < n)
             spawnWorker();
         cv_.notify_all();
     }
@@ -58,7 +70,17 @@ public:
 private:
     void spawnWorker() {
         workers_.emplace_back([this] { workerLoop(); });
-        liveCount_.store(workers_.size());
+        liveCount_.fetch_add(1);
+    }
+    void scrubWorkers() {
+        for (auto it = workers_.begin(); it != workers_.end(); ) {
+            if (it->joinable()) {
+                ++it;
+            } else {
+                it->detach();
+                it = workers_.erase(it);
+            }
+        }
     }
 
     // Try to exit if pool is over target (shrink)
@@ -72,6 +94,7 @@ private:
     }
 
     void workerLoop() {
+        bool wasShrunk = false;
         while (true) {
             std::function<void()> task;
             {
@@ -79,7 +102,7 @@ private:
                 cv_.wait(lk, [this] { return stop_ || !tasks_.empty() || liveCount_.load() > target_.load(); });
                 if (stop_ && tasks_.empty()) break;
                 if (liveCount_.load() > target_.load() && tasks_.empty()) {
-                    if (maybeShrink()) break;
+                    if (maybeShrink()) { wasShrunk = true; break; }
                     continue;
                 }
                 if (tasks_.empty()) continue;
@@ -93,9 +116,9 @@ private:
                 LOG_ERROR("Thread pool worker error: unknown exception");
             }
             // After finishing a task, check if we should shrink
-            if (!stop_ && maybeShrink()) break;
+            if (!stop_ && maybeShrink()) { wasShrunk = true; break; }
         }
-        liveCount_.fetch_sub(1);
+        if (!wasShrunk) liveCount_.fetch_sub(1);
     }
 
     mutable std::mutex m_;
@@ -106,7 +129,8 @@ private:
     std::atomic<size_t> target_{8};
     std::atomic<size_t> liveCount_{0};
     static constexpr size_t MIN_WORKERS = 4;
-    static constexpr size_t MAX_WORKERS = 32;
+    static constexpr size_t MAX_WORKERS = 64;
+    static constexpr size_t BACKPRESSURE_LIMIT = 2000;
 };
 
 static ThreadPool& dnsPool() {
@@ -379,9 +403,21 @@ void DnsServer::udpWorker(int id, uint16_t port) {
             auto unq = unqUpstream_;
             auto sock = udpSocket_;
 
-            dnsPool().enqueue([data, remote, res, over, unq, sock]() {
-                handleQuery(data->data(), data->size(), remote, res, over, unq, sock);
-            });
+            if (!dnsPool().tryEnqueue([data, remote, res, over, unq, sock]() {
+                    handleQuery(data->data(), data->size(), remote, res, over, unq, sock);
+                })) {
+                auto req = DnsMessage::parse(data->data(), data->size());
+                if (req) {
+                    auto reply = DnsMessage::createError(*req, DnsRcode::ServFail);
+                    if (reply) {
+                        auto wire = reply->pack();
+                        sys::error_code sendEc;
+                        sock->send_to(asio::buffer(wire), remote, 0, sendEc);
+                        if (sendEc) LOG_ERROR("UDP worker rejection send error: " + sendEc.message());
+                        PerfMonitor::instance().recordError();
+                    }
+                }
+            }
         }
     } catch (const std::exception& e) {
         if (running_) LOG_ERROR("UDP worker " + std::to_string(id) + " error: " + std::string(e.what()));
@@ -418,9 +454,22 @@ void DnsServer::onUdpReceive(sys::error_code ec, size_t len) {
     auto unqUpstream = unqUpstream_;
     auto sock = udpSocket_;
 
-    dnsPool().enqueue([data, remote, resolver, overrides, unqUpstream, sock]() {
-        handleQuery(data->data(), data->size(), remote, resolver, overrides, unqUpstream, sock);
-    });
+    if (!dnsPool().tryEnqueue([data, remote, resolver, overrides, unqUpstream, sock]() {
+            handleQuery(data->data(), data->size(), remote, resolver, overrides, unqUpstream, sock);
+        })) {
+        try {
+            auto req = DnsMessage::parse(data->data(), data->size());
+            if (req) {
+                auto reply = DnsMessage::createError(*req, DnsRcode::ServFail);
+                if (reply) {
+                    auto wire = std::make_shared<std::vector<uint8_t>>(reply->pack());
+                    sock->async_send_to(asio::buffer(*wire), remote,
+                        [wire](sys::error_code, size_t){});
+                    PerfMonitor::instance().recordError();
+                }
+            }
+        } catch (const std::exception&) {}
+    }
 
     startUdpReceive();
 }
