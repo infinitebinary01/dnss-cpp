@@ -32,11 +32,12 @@ public:
 private:
     void startUdpReceive();
     void onUdpReceive(sys::error_code ec, size_t len);
-    void handleQuery(const uint8_t* data, size_t len,
-                     asio::ip::udp::endpoint remote,
-                     std::shared_ptr<Resolver> resolver,
-                     DomainMap overrides,
-                     std::string unqUpstream);
+    static void handleQuery(const uint8_t* data, size_t len,
+                            asio::ip::udp::endpoint remote,
+                            std::shared_ptr<Resolver> resolver,
+                            DomainMap overrides,
+                            std::string unqUpstream,
+                            std::shared_ptr<asio::ip::udp::socket> udpSocket);
 
     std::string addr_;
     std::shared_ptr<Resolver> resolver_;
@@ -44,7 +45,7 @@ private:
     DomainMap overrides_;
 
     asio::io_context ioCtx_;
-    asio::ip::udp::socket udpSocket_{ioCtx_};
+    std::shared_ptr<asio::ip::udp::socket> udpSocket_;
     tcp::acceptor tcpAcceptor_{ioCtx_};
 
     std::array<uint8_t, 4096> recvBuf_;
@@ -56,4 +57,10 @@ private:
     static constexpr int NUM_WORKERS = 2;
     std::vector<std::thread> workerThreads_;
     void udpWorker(int id, uint16_t port);
+
+    std::thread tcpAcceptThread_;
+    std::thread perfMonitorThread_;
+
+    void tcpAcceptLoop();
+    void perfMonitorLoop();
 };

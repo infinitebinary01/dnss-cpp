@@ -45,7 +45,7 @@ private:
     PerfMonitor() = default;
 
     static constexpr int WINDOW_SIZE = 256;
-    struct LatencyRing {
+    struct alignas(64) LatencyRing {
         std::array<std::atomic<uint64_t>, WINDOW_SIZE> latencies_{};
         std::atomic<uint64_t> writeIdx_{0};
     };
@@ -63,6 +63,7 @@ private:
     std::atomic<int> totalConns_{0};
     std::atomic<int> poolPending_{0};
 
+    mutable std::mutex statsFnMutex_;
     mutable SupplementaryStatsFn extraStatsFn_;
 
     // Per-domain latency tracking

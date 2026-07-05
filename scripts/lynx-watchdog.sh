@@ -14,7 +14,7 @@ done
 LOG="/tmp/lynx-watchdog.log"
 PROXY_FILE="$HOME/.lynx-proxy"
 PROXY_ENV="$HOME/.proxy-env"
-PROXY_HOST="192.168.49.1"
+PROXY_HOST="<IP ADDRESS>"
 PROXY_PORT="8000"
 PROXY_URL="http://$PROXY_HOST:$PROXY_PORT/"
 NO_PROXY="localhost,127.0.0.1,::1,192.168.0.0/16,10.0.0.0/8"

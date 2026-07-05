@@ -18,7 +18,7 @@ MODE="${1:-}"
 LYNX_CONFIG_DIR="${LYNX_CONFIG_DIR:-$HOME/.config/lynx}"
 PROXY_FILE="$HOME/.lynx-proxy"
 
-WORK_PROXY="http://192.168.49.1:8000"
+WORK_PROXY="http://<IP ADDRESS>:8000"
 WORK_NO_PROXY="localhost,127.0.0.1,::1,192.168.0.0/16,10.0.0.0/8"
 
 die() { echo "$*" >&2; exit 1; }
@@ -60,9 +60,9 @@ EOF
     # 3. GNOME proxy
     if command -v gsettings &>/dev/null; then
         gsettings set org.gnome.system.proxy mode 'manual' 2>/dev/null || true
-        gsettings set org.gnome.system.proxy.http host '192.168.49.1' 2>/dev/null || true
+        gsettings set org.gnome.system.proxy.http host '<IP ADDRESS>' 2>/dev/null || true
         gsettings set org.gnome.system.proxy.http port 8000 2>/dev/null || true
-        gsettings set org.gnome.system.proxy.https host '192.168.49.1' 2>/dev/null || true
+        gsettings set org.gnome.system.proxy.https host '<IP ADDRESS>' 2>/dev/null || true
         gsettings set org.gnome.system.proxy.https port 8000 2>/dev/null || true
         gsettings set org.gnome.system.proxy ignore-hosts "['localhost', '127.0.0.0/8', '::1']" 2>/dev/null || true
         log "Set GNOME proxy to manual"

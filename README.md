@@ -15,18 +15,7 @@ A high-performance DNS-over-HTTPS (DoH) daemon
 
 ## Architecture
 
-```
-┌─────────┐   UDP/TCP    ┌──────────────┐   HTTPS      ┌──────────┐
-│  Client  │◄──────────►│  DnsServer   │─────────────►│ Upstream │
-└─────────┘   :53/8053  │  :53/8053    │  (via proxy) │ (DoH)    │
-                         └──────┬───────┘              └──────────┘
-                                │
-                         ┌──────┴───────┐
-                         │ CachingResolver│
-                         │  L1 Turbo    │
-                         │  L2 LRU      │
-                         └──────────────┘
-```
+<img src="lynxdohdnsmap.png" alt="Lynx DoH DNS Architecture" width="800">
 
 ## Dependencies
 

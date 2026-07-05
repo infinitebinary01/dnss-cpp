@@ -239,51 +239,7 @@ void HttpResolver::enableTcpKeepalive(asio::ip::tcp::socket& socket) {
     setsockopt(socket.native_handle(), IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(keepcnt));
 }
 
-static size_t readHttpBody(const std::vector<uint8_t>& rawResp,
-                           std::string& bodyOut, std::string& statusOut) {
-    std::string respStr(reinterpret_cast<const char*>(rawResp.data()), rawResp.size());
-    auto headerEnd = respStr.find("\r\n\r\n");
-    if (headerEnd == std::string::npos) return 0;
 
-    std::string headerPart = respStr.substr(0, headerEnd);
-    statusOut = headerPart.substr(0, headerPart.find('\r'));
-
-    if (statusOut.find("200") == std::string::npos) {
-        bodyOut = respStr.substr(headerEnd + 4);
-        return headerEnd + 4;
-    }
-
-    std::string headLow = headerPart;
-    for (auto& c : headLow) c = tolower(c);
-    auto clPos = headLow.find("content-length: ");
-    if (clPos != std::string::npos) {
-        clPos += 16;
-        auto clEnd = headLow.find("\r\n", clPos);
-        size_t contentLen = std::stoul(headerPart.substr(clPos, clEnd - clPos));
-        bodyOut = respStr.substr(headerEnd + 4, contentLen);
-        return headerEnd + 4 + contentLen;
-    }
-
-    if (headLow.find("chunked") != std::string::npos) {
-        std::string body = respStr.substr(headerEnd + 4);
-        std::string decoded;
-        size_t pos = 0;
-        while (pos < body.size()) {
-            auto crlf = body.find("\r\n", pos);
-            if (crlf == std::string::npos) break;
-            size_t chunkSize = std::stoul(body.substr(pos, crlf - pos), nullptr, 16);
-            if (chunkSize == 0) break;
-            size_t chunkStart = crlf + 2;
-            decoded.append(body.data() + chunkStart, chunkSize);
-            pos = chunkStart + chunkSize + 2;
-        }
-        bodyOut = std::move(decoded);
-        return headerEnd + 4;
-    }
-
-    bodyOut = respStr.substr(headerEnd + 4);
-    return headerEnd + 4;
-}
 
 // Shared open logic that ConnectionController can also call
 bool HttpResolver::openFunc(const std::string& host, const std::string& port,
@@ -291,18 +247,27 @@ bool HttpResolver::openFunc(const std::string& host, const std::string& port,
                              asio::ssl::stream<asio::ip::tcp::socket>& stream,
                              boost::system::error_code& ec) {
     asio::io_context tmpCtx;
+
+    bool useProxy;
+    std::string proxyHost, proxyPort;
+    {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        useProxy = useProxy_;
+        proxyHost = proxyHost_;
+        proxyPort = proxyPort_;
+    }
+
     {
         boost::system::error_code openEc;
         stream.next_layer().open(asio::ip::tcp::v4(), openEc);
-        if (!openEc) {
-            setSocketTimeout(stream.next_layer(), 2);
-            { int syn = 2; setsockopt(stream.next_layer().native_handle(), IPPROTO_TCP, TCP_SYNCNT, &syn, sizeof(syn)); }
-        }
+        if (openEc) { ec = openEc; return false; }
+        setSocketTimeout(stream.next_layer(), 2);
+        { int syn = 2; setsockopt(stream.next_layer().native_handle(), IPPROTO_TCP, TCP_SYNCNT, &syn, sizeof(syn)); }
     }
 
-    if (useProxy_) {
+    if (useProxy) {
         tcp::resolver resolver(tmpCtx);
-        auto proxyEp = resolver.resolve(proxyHost_, proxyPort_, ec);
+        auto proxyEp = resolver.resolve(proxyHost, proxyPort, ec);
         if (!ec) {
             asio::connect(stream.next_layer(), proxyEp.begin(), proxyEp.end(), ec);
         }
@@ -334,11 +299,21 @@ bool HttpResolver::openFunc(const std::string& host, const std::string& port,
         if (!ec) {
             stream.handshake(asio::ssl::stream_base::client, ec);
         }
-        if (ec) {
+        if (!ec) {
+            return true;
+        }
+        // Proxy failed — socket was closed by SSL handshake error or we close it now
+        {
             boost::system::error_code closeEc;
             stream.next_layer().close(closeEc);
-        } else {
-            return true;
+        }
+        // Re-open socket for direct fallback
+        {
+            boost::system::error_code reOpenEc;
+            stream.next_layer().open(asio::ip::tcp::v4(), reOpenEc);
+            if (reOpenEc) { ec = reOpenEc; return false; }
+            setSocketTimeout(stream.next_layer(), 2);
+            { int syn = 2; setsockopt(stream.next_layer().native_handle(), IPPROTO_TCP, TCP_SYNCNT, &syn, sizeof(syn)); }
         }
     }
 
@@ -401,6 +376,7 @@ void HttpResolver::init() {
 
 void HttpResolver::reload() {
     // Priority: 1) ~/.lynx-proxy 2) env var 3) GNOME gsettings 4) direct
+    std::lock_guard<std::mutex> lock(configMutex_);
     proxy_.clear();
 
     // 1) ~/.lynx-proxy file (written by switch-network.sh or NM dispatcher)
@@ -469,6 +445,7 @@ void HttpResolver::maintain() {
         int errRatio = (pool.errors * 100) / total;
         pool.lastErrorRatio = errRatio;
 
+        std::lock_guard<std::mutex> lock(pool.growMutex);
         int currentSize = pool.connections.size();
         if (errRatio > 30 && currentSize > 2) {
             // Bad pool: shrink by 1
@@ -483,6 +460,16 @@ void HttpResolver::maintain() {
         pool.successes = pool.successes / 2;
         pool.errors = pool.errors / 2;
     }
+}
+
+void HttpResolver::Connection::buildHeaderPrefix() {
+    std::ostringstream oss;
+    oss << "POST " << target << " HTTP/1.1\r\n"
+        << "Host: " << host << "\r\n"
+        << "User-Agent: lynx/0.2\r\n"
+        << "Content-Type: application/dns-message\r\n"
+        << "Accept: application/dns-message\r\n";
+    headerPrefix = oss.str();
 }
 
 void HttpResolver::Connection::close() {
@@ -587,28 +574,26 @@ DnsMessagePtr HttpResolver::Connection::exchange(const std::vector<uint8_t>& wir
 
     boost::system::error_code ec;
 
-    // Aggressive timeout — fail fast, retry on next connection or upstream
-    setSocketTimeoutMs(stream->next_layer(), 5000); // socket read/write timeout (ms)
+    // Build Content-Length line using stack buffer (avoid string allocation)
+    char clBuf[64];
+    int clLen = snprintf(clBuf, sizeof(clBuf), "Content-Length: %zu\r\n"
+                                               "Connection: keep-alive\r\n"
+                                               "\r\n", wire.size());
+    size_t clampedLen = std::min<size_t>(static_cast<size_t>(clLen), sizeof(clBuf) - 1);
+    std::string_view clPart(clBuf, clampedLen);
 
-    std::ostringstream oss;
-    oss << "POST " << target << " HTTP/1.1\r\n"
-        << "Host: " << host << "\r\n"
-        << "User-Agent: lynx/0.2\r\n"
-        << "Content-Type: application/dns-message\r\n"
-        << "Accept: application/dns-message\r\n"
-        << "Content-Length: " << wire.size() << "\r\n"
-        << "Connection: keep-alive\r\n"
-        << "\r\n";
-    std::string header = oss.str();
-
-    std::vector<asio::const_buffer> sendBufs;
-    sendBufs.push_back(asio::buffer(header));
-    sendBufs.push_back(asio::buffer(wire));
+    // Gather write buffers: headerPrefix + content-length line + wire
+    std::array<asio::const_buffer, 3> sendBufs = {{
+        asio::buffer(headerPrefix),
+        asio::buffer(clPart.data(), clPart.size()),
+        asio::buffer(wire)
+    }};
     asio::write(*stream, sendBufs, ec);
     if (ec) { return nullptr; }
 
     std::vector<uint8_t> respBuf;
     respBuf.reserve(4096);
+    size_t headerEndPos = 0;
     bool headerDone = false;
     size_t contentLength = 0;
     bool isChunked = false;
@@ -624,39 +609,40 @@ DnsMessagePtr HttpResolver::Connection::exchange(const std::vector<uint8_t>& wir
         memcpy(respBuf.data() + oldSize, chunk.data(), n);
 
         if (!headerDone) {
-            std::string respStr(reinterpret_cast<char*>(respBuf.data()), respBuf.size());
-            auto headerEnd = respStr.find("\r\n\r\n");
-            if (headerEnd != std::string::npos) {
+            auto raw = reinterpret_cast<const char*>(respBuf.data());
+            std::string_view sv(raw, respBuf.size());
+            auto he = sv.find("\r\n\r\n");
+            if (he != std::string_view::npos) {
                 headerDone = true;
-                std::string headerPart = respStr.substr(0, headerEnd);
-                std::string lowHead = headerPart;
-                for (auto& c : lowHead) c = tolower(c);
-                auto clPos = lowHead.find("content-length: ");
-                if (clPos != std::string::npos) {
-                    clPos += 16;
-                    auto clEnd = lowHead.find("\r\n", clPos);
-                    contentLength = std::stoul(headerPart.substr(clPos, clEnd - clPos));
+                headerEndPos = he;
+                auto hdr = sv.substr(0, he);
+                auto clTag = hdr.find("Content-Length: ");
+                if (clTag != std::string_view::npos) {
+                    clTag += 16;
+                    auto clEnd = hdr.find("\r\n", clTag);
+                    if (clEnd != std::string_view::npos) {
+                        char clStr[32];
+                        size_t clSize = std::min(clEnd - clTag, sizeof(clStr) - 1);
+                        memcpy(clStr, raw + clTag, clSize);
+                        clStr[clSize] = '\0';
+                        contentLength = std::stoul(clStr);
+                    }
                 }
-                if (lowHead.find("chunked") != std::string::npos) {
+                if (hdr.find("chunked") != std::string_view::npos) {
                     isChunked = true;
                 }
                 if (contentLength > 0) {
-                    size_t bodySoFar = respBuf.size() - (headerEnd + 4);
+                    size_t bodySoFar = respBuf.size() - (he + 4);
                     if (bodySoFar >= contentLength) break;
                 }
                 if (!isChunked && contentLength == 0) break;
             }
-        } else {
-            if (contentLength > 0) {
-                std::string tmpStr(reinterpret_cast<char*>(respBuf.data()), respBuf.size());
-                auto he = tmpStr.find("\r\n\r\n");
-                if (he != std::string::npos) {
-                    size_t bodySoFar = respBuf.size() - (he + 4);
-                    if (bodySoFar >= contentLength) break;
-                }
-            } else if (!isChunked) {
-                break;
-            }
+        }
+        if (contentLength > 0) {
+            size_t bodySoFar = respBuf.size() - (headerEndPos + 4);
+            if (bodySoFar >= contentLength) break;
+        } else if (!isChunked && headerDone) {
+            break;
         }
     }
 
@@ -664,27 +650,43 @@ DnsMessagePtr HttpResolver::Connection::exchange(const std::vector<uint8_t>& wir
         return nullptr;
     }
 
-    std::string body, statusLine;
-    readHttpBody(respBuf, body, statusLine);
+    auto raw = reinterpret_cast<const char*>(respBuf.data());
+    std::string_view sv(raw, respBuf.size());
+    auto headerEnd = sv.find("\r\n\r\n");
+    if (headerEnd == std::string_view::npos) return nullptr;
 
-    if (statusLine.empty()) {
-        LOG_ERROR("DoH upstream error: empty status line, raw=" +
-                  std::string(reinterpret_cast<char*>(respBuf.data()),
-                  std::min(respBuf.size(), size_t(200))));
+    std::string_view headerPart = sv.substr(0, headerEnd);
+    std::string_view statusLine = headerPart.substr(0, headerPart.find('\r'));
+    size_t bodyOffset = headerEnd + 4;
+
+    if (statusLine.find("200") == std::string_view::npos) {
+        LOG_ERROR("DoH upstream error: " + std::string(statusLine));
         return nullptr;
     }
-    if (statusLine.find("200") == std::string::npos) {
-        LOG_ERROR("DoH upstream error: " + statusLine);
-        return nullptr;
+
+    // Parse content-length from header for exact body
+    auto clTag = headerPart.find("Content-Length: ");
+    size_t totalBody = respBuf.size() - bodyOffset;
+    if (clTag != std::string_view::npos) {
+        clTag += 16;
+        auto clEnd = headerPart.find("\r\n", clTag);
+        if (clEnd != std::string_view::npos) {
+            char clStr[32];
+            size_t clSize = std::min(clEnd - clTag, sizeof(clStr) - 1);
+            memcpy(clStr, raw + clTag, clSize);
+            clStr[clSize] = '\0';
+            totalBody = std::stoul(clStr);
+        }
     }
-    if (body.empty()) {
+
+    if (totalBody == 0) {
         LOG_ERROR("DoH empty response body");
         return nullptr;
     }
 
     auto t0 = std::chrono::steady_clock::now();
     auto reply = DnsMessage::parse(
-        reinterpret_cast<const uint8_t*>(body.data()), body.size());
+        reinterpret_cast<const uint8_t*>(raw + bodyOffset), totalBody);
     auto dt = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - t0);
     PerfMonitor::instance().recordLatency(dt);
@@ -693,8 +695,8 @@ DnsMessagePtr HttpResolver::Connection::exchange(const std::vector<uint8_t>& wir
 }
 
 DnsMessagePtr HttpResolver::query(const DnsMessage& req, bool allowFanOut) {
-    static std::atomic<int> queryCount{0};
-    if (queryCount.fetch_add(1, std::memory_order_relaxed) % 100 == 0)
+    thread_local int queryCount = 0;
+    if (++queryCount % 100 == 0)
         maintain();
     int totalConns = 0;
     for (auto& pool : pools_) totalConns += pool.connections.size();
@@ -764,11 +766,13 @@ void HttpResolver::ensurePoolSize(UpstreamPool& pool, size_t target) {
         conn->port = pool.port;
         conn->target = pool.target;
         conn->poolRef = &pool;
+        conn->buildHeaderPrefix();
         pool.connections.push_back(std::move(conn));
     }
 }
 
 HttpResolver::Connection* HttpResolver::getNextConnection(HttpResolver::UpstreamPool& pool) {
+    std::lock_guard<std::mutex> lock(pool.growMutex);
     int numConns = pool.connections.size();
     if (numConns == 0) return nullptr;
     int start = pool.nextConn.fetch_add(1, std::memory_order_relaxed) % numConns;
@@ -789,11 +793,22 @@ int HttpResolver::countConnected() const {
 void HttpResolver::openConnectionAsync(Connection* conn) {
     if (conn->inUse.exchange(true)) return;
     if (conn->stream) connCtrl_.unmanage(conn->stream.get());
-    std::thread([conn, this]() {
+    std::string proxyHost, proxyPort, noProxy;
+    bool useProxy;
+    {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        proxyHost = proxyHost_;
+        proxyPort = proxyPort_;
+        noProxy = noProxy_;
+        useProxy = useProxy_;
+    }
+    std::thread([conn, this, proxyHost, proxyPort, noProxy, useProxy]() {
         boost::system::error_code ec;
-        conn->open(proxyHost_, proxyPort_, noProxy_, sslCtx_, useProxy_, ec);
-        if (ec) conn->connected = false;
-        if (conn->stream) {
+        conn->open(proxyHost, proxyPort, noProxy, sslCtx_, useProxy, ec);
+        if (ec) {
+            conn->connected = false;
+        }
+        if (conn->stream && conn->connected.load()) {
             connCtrl_.manage(conn->host, conn->port, conn->target,
                              conn->stream.get(), &conn->connected);
         }
@@ -813,19 +828,29 @@ void HttpResolver::warmUp() {
                         / static_cast<int>(pools_.size());
     if (targetPerPool < 2) targetPerPool = 2;
 
+    std::string proxyHost, proxyPort, noProxy;
+    bool useProxy;
+    {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        proxyHost = proxyHost_;
+        proxyPort = proxyPort_;
+        noProxy = noProxy_;
+        useProxy = useProxy_;
+    }
+
     std::vector<std::future<void>> futures;
     for (auto& pool : pools_) {
         ensurePoolSize(pool, static_cast<size_t>(targetPerPool));
         for (auto& conn : pool.connections) {
-            futures.push_back(std::async(std::launch::async, [conn = conn.get(), this]() {
+            futures.push_back(std::async(std::launch::async,
+                [conn = conn.get(), this, proxyHost, proxyPort, noProxy, useProxy]() {
                 if (conn->stream) connCtrl_.unmanage(conn->stream.get());
                 boost::system::error_code ec;
-                bool ok = conn->open(proxyHost_, proxyPort_, noProxy_, sslCtx_, useProxy_, ec);
-                if (conn->stream) {
+                bool ok = conn->open(proxyHost, proxyPort, noProxy, sslCtx_, useProxy, ec);
+                if (ok && conn->stream) {
                     connCtrl_.manage(conn->host, conn->port, conn->target,
                                      conn->stream.get(), &conn->connected);
                 }
-                if (!ok) conn->connected = false;
             }));
         }
     }
@@ -857,6 +882,16 @@ DnsMessagePtr HttpResolver::doPost(const DnsMessage& req) {
 
 DnsMessagePtr HttpResolver::doPost(const DnsMessage& req, bool allowFanOut) {
     auto wire = req.pack();
+
+    std::string proxyHost, proxyPort, noProxy;
+    bool useProxy;
+    {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        proxyHost = proxyHost_;
+        proxyPort = proxyPort_;
+        noProxy = noProxy_;
+        useProxy = useProxy_;
+    }
 
     int targetPerPool = AutoTuner::instance().recommendedConnections()
                         / static_cast<int>(pools_.size());
@@ -907,8 +942,8 @@ DnsMessagePtr HttpResolver::doPost(const DnsMessage& req, bool allowFanOut) {
 
             if (conn->stream) connCtrl_.unmanage(conn->stream.get());
             boost::system::error_code ec;
-            conn->open(proxyHost_, proxyPort_, noProxy_, sslCtx_, useProxy_, ec);
-            if (conn->stream) {
+            conn->open(proxyHost, proxyPort, noProxy, sslCtx_, useProxy, ec);
+            if (!ec && conn->stream) {
                 connCtrl_.manage(conn->host, conn->port, conn->target,
                                  conn->stream.get(), &conn->connected);
             }
@@ -959,7 +994,7 @@ DnsMessagePtr HttpResolver::raceUpstreams(const std::vector<uint8_t>& wire) {
 
     std::vector<std::future<DnsMessagePtr>> futures;
     for (auto* conn : candidates) {
-        futures.push_back(std::async(std::launch::async, [conn, &wire]() {
+        futures.push_back(std::async(std::launch::async, [conn, wire]() {
             return conn->exchange(wire);
         }));
     }

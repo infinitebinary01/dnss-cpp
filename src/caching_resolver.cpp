@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <thread>
 #include <vector>
+#include <immintrin.h>
 
 uint64_t CachingResolver::turboHash(const CacheKey& k) {
     uint64_t h = 14695981039346656037ULL;
@@ -13,6 +14,8 @@ uint64_t CachingResolver::turboHash(const CacheKey& k) {
     h ^= (uint64_t)k.qclass;
     return h;
 }
+
+
 
 CachingResolver::CachingResolver(std::unique_ptr<Resolver> back)
     : back_(std::move(back)) {
@@ -29,7 +32,9 @@ CachingResolver::~CachingResolver() {
 bool CachingResolver::turboLookup(uint64_t h, DnsMessagePtr& out) {
     size_t idx = h & (TURBO_SIZE - 1);
     auto& slot = turbo_[idx];
-    while (slot.lock.test_and_set(std::memory_order_acquire)) {}
+    while (slot.lock.test_and_set(std::memory_order_acquire)) {
+        _mm_pause();
+    }
     if (slot.keyHash.load(std::memory_order_relaxed) != h) {
         slot.lock.clear(std::memory_order_release);
         return false;
@@ -48,7 +53,9 @@ void CachingResolver::turboInsert(uint64_t h, DnsMessagePtr msg,
                                    std::chrono::steady_clock::time_point expiresAt) {
     size_t idx = h & (TURBO_SIZE - 1);
     auto& slot = turbo_[idx];
-    while (slot.lock.test_and_set(std::memory_order_acquire)) {}
+    while (slot.lock.test_and_set(std::memory_order_acquire)) {
+        _mm_pause();
+    }
     slot.keyHash.store(h, std::memory_order_relaxed);
     slot.msg = std::move(msg);
     slot.expiresAt = expiresAt;
@@ -93,7 +100,7 @@ void CachingResolver::maintain() {
                     for (auto& [key, entry] : cache_) {
                         if (running_ && needsRefresh(entry) &&
                             entry.ttl >= minTTL) {
-                            toRefresh.emplace_back(key, entry.question);
+                            toRefresh.emplace_back(key, DnsQuestion{key.name, key.type, key.qclass});
                         }
                     }
                 }
@@ -157,7 +164,7 @@ void CachingResolver::refreshEntry(const CacheKey& key, const DnsQuestion& quest
         std::unique_lock lock(cacheMutex_);
         auto it = cache_.find(key);
         if (it != cache_.end()) {
-            it->second.msg = reply->copy();
+            it->second.msg = std::move(reply);
             it->second.ttl = ttl;
             it->second.expiresAt = std::chrono::steady_clock::now() + ttl;
             preemptiveRefreshes_++;
@@ -178,7 +185,10 @@ DnsMessagePtr CachingResolver::query(const DnsMessage& req, bool allowFanOut) {
     uint64_t h = turboHash(key);
 
     // Track for adaptive prewarm
-    prewarmTracker_[q.qname].fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lock(prewarmMutex_);
+        prewarmTracker_[q.qname]++;
+    }
 
     // L1 turbo lookup (lock-free fast path)
     {
@@ -226,7 +236,6 @@ DnsMessagePtr CachingResolver::query(const DnsMessage& req, bool allowFanOut) {
                 entry.msg = reply->copy();
                 entry.ttl = ttl;
                 entry.expiresAt = expiresAt;
-                entry.question = q;
                 cache_[key] = std::move(entry);
                 cacheRecorded_++;
             }
@@ -328,14 +337,13 @@ int64_t CachingResolver::total() const { return totalQueries_.load(); }
 int CachingResolver::countConnected() const { return back_->countConnected(); }
 
 void CachingResolver::doAdaptivePrewarm() {
-    // Collect top queried domains
     std::vector<std::pair<std::string, uint64_t>> sorted;
     {
         std::lock_guard<std::mutex> lock(prewarmMutex_);
         for (auto& [name, count] : prewarmTracker_) {
-            uint64_t c = count.load(std::memory_order_relaxed);
-            if (c > 0) sorted.push_back({name, c});
+            if (count > 0) sorted.push_back({name, count});
         }
+        prewarmTracker_.clear();
     }
     if (sorted.empty()) return;
 
@@ -346,17 +354,14 @@ void CachingResolver::doAdaptivePrewarm() {
     int count = 0;
     for (auto& [name, _] : sorted) {
         if (++count > 10) break;
-        // Skip if already in turbo
         CacheKey key{name, DnsType::A, 1};
         DnsMessagePtr dummy;
         if (turboLookup(turboHash(key), dummy)) continue;
 
         auto q = DnsMessage::createQuery(name, DnsType::A);
         if (q) {
-            auto reply = back_->query(*q, false);
-            if (reply) {
+            if (back_->query(*q, false)) {
                 prewarmed++;
-                LOG_DEBUG("Adaptive prewarm: " + name);
             }
         }
     }

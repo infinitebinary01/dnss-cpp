@@ -86,10 +86,12 @@ public:
 };
 
 inline uint16_t rdataToUint16(const std::vector<uint8_t>& rdata, size_t off = 0) {
+    if (off + 2 > rdata.size()) return 0;
     return (rdata[off] << 8) | rdata[off + 1];
 }
 
 inline uint32_t rdataToUint32(const std::vector<uint8_t>& rdata, size_t off = 0) {
+    if (off + 4 > rdata.size()) return 0;
     return (static_cast<uint32_t>(rdata[off]) << 24) |
            (static_cast<uint32_t>(rdata[off + 1]) << 16) |
            (static_cast<uint32_t>(rdata[off + 2]) << 8) |
@@ -127,17 +129,37 @@ inline bool nameEquals(const std::string& a, const std::string& b) {
     const char* pa = a.data();
     const char* pb = b.data();
     size_t len = a.size();
-    // Process 16 bytes at a time with SSE4.2
-    for (size_t i = 0; i < len; i += 16) {
+    size_t i = 0;
+    // Process 16 bytes at a time with SSE4.2 (only full chunks)
+    for (; i + 16 <= len; i += 16) {
         __m128i va = _mm_loadu_si128(reinterpret_cast<const __m128i*>(pa + i));
         __m128i vb = _mm_loadu_si128(reinterpret_cast<const __m128i*>(pb + i));
-        // XOR to find differences
         __m128i diff = _mm_xor_si128(va, vb);
-        // Mask out case bit (0x20) for ASCII letters
+        // Exact match — continue
+        if (_mm_testz_si128(diff, diff)) continue;
+        // Check if the only difference is bit 5 (case bit)
+        __m128i nonCaseMask = _mm_set1_epi8(~0x20);
+        __m128i nonCaseDiff = _mm_and_si128(diff, nonCaseMask);
+        if (_mm_testz_si128(nonCaseDiff, nonCaseDiff) == 0) return false;
+        // Bit-5-only differences must be actual letter pairs (A-Z / a-z)
+        // Normalize both to lowercase and verify they're in 'a'..'z'
         __m128i caseMask = _mm_set1_epi8(0x20);
-        // Check if diff is either 0 or 0x20 (case difference)
-        __m128i masked = _mm_and_si128(diff, _mm_set1_epi8(~0x20));
-        if (_mm_testz_si128(masked, masked) == 0) return false;
+        __m128i lowVa = _mm_or_si128(va, caseMask);
+        __m128i ge_a = _mm_cmpeq_epi8(_mm_max_epu8(lowVa, _mm_set1_epi8('a')), lowVa);
+        __m128i le_z = _mm_cmpeq_epi8(_mm_min_epu8(lowVa, _mm_set1_epi8('z')), lowVa);
+        __m128i letter = _mm_and_si128(ge_a, le_z);
+        // Combine with exact-match positions (those don't need the letter check)
+        __m128i exact = _mm_cmpeq_epi8(diff, _mm_setzero_si128());
+        __m128i ok = _mm_or_si128(exact, letter);
+        if (_mm_movemask_epi8(ok) != 0xFFFF) return false;
+    }
+    // Tail bytes (less than 16)
+    for (; i < len; ++i) {
+        char ca = pa[i], cb = pb[i];
+        if (ca == cb) continue;
+        if (ca >= 'A' && ca <= 'Z') ca |= 0x20;
+        if (cb >= 'A' && cb <= 'Z') cb |= 0x20;
+        if (ca != cb) return false;
     }
     return true;
 #else
@@ -158,8 +180,10 @@ inline bool nameEquals(const std::string& a, const std::string& b) {
 inline std::string wireToName(const uint8_t*& p, const uint8_t* end,
                                const uint8_t* start) {
     std::string name;
+    name.reserve(64);
     bool jumped = false;
     const uint8_t* saved = nullptr;
+    int jumpCount = 0;
 
     while (true) {
         if (p >= end) throw std::runtime_error("truncated DNS name");
@@ -170,6 +194,7 @@ inline std::string wireToName(const uint8_t*& p, const uint8_t* end,
         }
         if ((len & 0xC0) == 0xC0) {
             if (p + 1 >= end) throw std::runtime_error("truncated DNS pointer");
+            if (++jumpCount > 10) throw std::runtime_error("DNS compression pointer cycle");
             uint16_t offset = ((len & 0x3F) << 8) | p[1];
             if (!jumped) {
                 p += 2;
@@ -195,16 +220,18 @@ inline std::string nameToWire(const std::string& name) {
         out.push_back(0);
         return out;
     }
-    std::string n = name;
-    if (n.back() != '.') n.push_back('.');
+    out.reserve(name.size() + 2);
     size_t start = 0;
-    while (start < n.size()) {
-        auto dot = n.find('.', start);
+    while (start <= name.size()) {
+        auto dot = name.find('.', start);
+        size_t end = (dot != std::string::npos) ? dot : name.size();
+        size_t len = end - start;
+        if (len > 0) {
+            if (len > 63) throw std::runtime_error("label too long");
+            out.push_back(static_cast<uint8_t>(len));
+            out.append(name.data() + start, len);
+        }
         if (dot == std::string::npos) break;
-        size_t len = dot - start;
-        if (len > 63) throw std::runtime_error("label too long");
-        out.push_back(static_cast<uint8_t>(len));
-        out.append(n.data() + start, len);
         start = dot + 1;
     }
     out.push_back(0);

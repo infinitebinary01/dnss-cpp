@@ -23,6 +23,41 @@ h1{font-size:28px;font-weight:600;color:#1a73e8;margin-bottom:4px;}
 <p class='subtitle'>DNS-over-HTTPS proxy</p>
 
 <div class='version'>
+<h2>v0.5.0</h2>
+<p class='date'>2026-07-04</p>
+<ul>
+<li><b>Performance</b>: Pre-built HTTP header prefix per connection — eliminates <code>ostringstream</code> allocation per DNS query (<code>Connection::buildHeaderPrefix()</code>).</li>
+<li><b>Performance</b>: In-place HTTP response parsing with <code>string_view</code> — zero-copy header/body extraction in both <code>exchange()</code> and <code>healthCheck()</code>.</li>
+<li><b>Performance</b>: Reconnect thread-per-failure → single reconnect worker thread with work queue — prevents thread storms under network flips (<code>ConnectionController</code>).</li>
+<li><b>Performance</b>: Reconnect uses stream pointer instead of stale vector index — eliminates race on reconnections after vector modification.</li>
+<li><b>Performance</b>: Reconnect releases mutex during blocking TCP/SSL handshake — prevents all maintenance threads from blocking during slow reconnects.</li>
+<li><b>Performance</b>: Sharded rate limiter (16 FNV-1a buckets) — reduces mutex contention under high QPS (<code>DnsServer</code>).</li>
+<li><b>Performance</b>: CacheEntry duplicate <code>question</code> field removed — saves memory per cache entry (<code>CachingResolver</code>).</li>
+<li><b>Performance</b>: <code>_mm_pause()</code> in turboLookup/turboInsert spinloops — reduces power/contention on contended atomics.</li>
+<li><b>Performance</b>: <code>refreshEntry</code> uses <code>std::move(reply)</code> instead of <code>reply->copy()</code> — avoids full DNS message copy during refresh.</li>
+<li><b>Performance</b>: <code>thread_local</code> query counter replaces <code>static std::atomic&lt;int&gt;</code> — avoids atomic contention per query.</li>
+<li><b>Performance</b>: <code>LatencyRing</code> marked <code>alignas(64)</code> — prevents false sharing between threads (<code>PerfMonitor</code>).</li>
+<li><b>Performance</b>: <code>nameToWire()</code> avoids string copy for trailing dot; <code>wireToName()</code> reserves 64 bytes.</li>
+<li><b>Performance</b>: <code>makeHealthQuery()</code> returns <code>static const</code> buffer — avoids per-call allocation.</li>
+<li><b>Fix</b>: <code>raceUpstreams()</code> captures <code>wire</code> by value instead of by reference — prevents use-after-free when async tasks outlive the caller.</li>
+<li><b>Fix</b>: Missing <code>memcpy</code> in <code>exchange()</code> and <code>healthCheck()</code> response reassembly — body data was silently discarded (bug introduced during <code>string_view</code> refactor).</li>
+<li><b>Fix</b>: Reconnect loop in <code>run()</code> still used stale <code>reconnectAsync(idx)</code> — now pushes <code>ReconnectWork</code> to queue.</li>
+<li><b>Fix</b>: Reconnect queue LIFO (<code>pop_back</code>) → FIFO (<code>pop_front</code>) — ensures oldest failure reconnects first.</li>
+<li><b>Fix</b>: <code>snprintf</code> return value unclamped in Content-Length formatting — potential <code>string_view</code> over-read.</li>
+<li><b>Fix</b>: <code>maintain()</code> modifies <code>pool.connections</code> without <code>growMutex</code> — data race with concurrent <code>getNextConnection()</code>.</li>
+<li><b>Fix</b>: Socket closed before <code>connected</code> flag cleared in <code>probeAllIdle()</code> and <code>run()</code> — race window allowed writes to closed sockets.</li>
+<li><b>Fix</b>: <code>getNextConnection()</code> reads <code>pool.connections</code> without lock — UB when vector resizes concurrently.</li>
+<li><b>Fix</b>: <code>connCtrl_.manage()</code> called even on connection failure — zombie entries registered in ConnectionController.</li>
+<li><b>Fix</b>: <code>reload()</code> modifies proxy config without synchronization — data race with concurrent query threads.</li>
+<li><b>Fix</b>: Socket not re-opened after proxy failure in <code>openFunc()</code> — direct fallback path used a closed socket.</li>
+<li><b>Fix</b>: Socket <code>open()</code> failure not propagated in <code>openFunc()</code> — code continued to <code>connect()</code> on closed socket.</li>
+<li><b>Fix</b>: Aggregate init order-dependent on struct layout in <code>manage()</code> — replaced with explicit member initialization.</li>
+<li><b>Refactor</b>: Reconnect worker loop extracted into <code>ConnectionController::reconnectLoop()</code> member function.</li>
+<li><b>Architecture</b>: Architecture diagram replaced with <code>lynxdohdnsmap.png</code> visual in README.</li>
+</ul>
+</div>
+
+<div class='version'>
 <h2>v0.4.0</h2>
 <p class='date'>2026-07-03</p>
 <ul>

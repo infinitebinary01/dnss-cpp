@@ -44,8 +44,10 @@ private:
         std::string host;
         std::string port;
         std::string target;
-        UpstreamPool* poolRef{nullptr}; // back-pointer for health tracking
+        std::string headerPrefix; // pre-built HTTP header (without Content-Length)
+        UpstreamPool* poolRef{nullptr};
 
+        void buildHeaderPrefix();
         void close();
         bool open(const std::string& proxyHost, const std::string& proxyPort,
                   const std::string& proxyNoProxy, asio::ssl::context& sslCtx,
@@ -64,7 +66,7 @@ private:
         // Per-upstream health tracking
         std::atomic<int> errors{0};
         std::atomic<int> successes{0};
-        int lastErrorRatio = 0;
+        std::atomic<int> lastErrorRatio{0};
 
         void parseUrl(const std::string& url);
     };
@@ -91,6 +93,7 @@ private:
     std::string caFile_;
     std::string fallback_;
 
+    mutable std::mutex configMutex_;
     std::string proxy_;
     std::string noProxy_;
     bool useProxy_ = false;

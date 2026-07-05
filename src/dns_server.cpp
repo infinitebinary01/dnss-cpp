@@ -114,24 +114,35 @@ static ThreadPool& dnsPool() {
     return pool;
 }
 
-// Rate limiter - simple token bucket per client IP
+// Rate limiter — sharded token bucket per client IP (reduces mutex contention)
 class RateLimiter {
 public:
     bool allow(const std::string& ip) {
+        size_t shard = fnv1a(ip) & (SHARDS - 1);
+        auto& s = shards_[shard];
         auto now = std::chrono::steady_clock::now();
-        std::lock_guard<std::mutex> lk(m_);
-        auto& entry = clients_[ip];
+        std::lock_guard<std::mutex> lk(s.m);
+        auto& entry = s.clients[ip];
         if (now - entry.last > std::chrono::seconds(1)) {
             entry.count = 0;
             entry.last = now;
         }
-        if (++entry.count > 100) return false; // 100 qps per IP
+        if (++entry.count > 100) return false;
         return true;
     }
 private:
     struct Entry { std::chrono::steady_clock::time_point last; int count = 0; };
-    std::unordered_map<std::string, Entry> clients_;
-    std::mutex m_;
+    struct Shard {
+        std::unordered_map<std::string, Entry> clients;
+        std::mutex m;
+    };
+    static constexpr size_t SHARDS = 16;
+    std::array<Shard, SHARDS> shards_;
+    static uint64_t fnv1a(const std::string& s) {
+        uint64_t h = 14695981039346656037ULL;
+        for (char c : s) { h ^= (uint8_t)c; h *= 1099511628211ULL; }
+        return h;
+    }
 };
 
 static RateLimiter rateLimiter;
@@ -147,10 +158,65 @@ DnsServer::~DnsServer() {
     stop();
 }
 
+void DnsServer::tcpAcceptLoop() {
+    while (running_) {
+        sys::error_code ec;
+        tcp::socket socket(ioCtx_);
+        tcpAcceptor_.accept(socket, ec);
+        if (ec) {
+            if (running_) LOG_ERROR("TCP accept error: " + ec.message());
+            break;
+        }
+        auto r = resolver_;
+        std::thread([sock = std::move(socket), r]() mutable {
+            try {
+                sock.set_option(tcp::no_delay(true));
+                uint16_t net_len;
+                asio::read(sock, asio::buffer(&net_len, 2));
+                uint16_t len = ntohs(net_len);
+                if (len < 12 || len > 65535) return;
+                std::vector<uint8_t> buf(len);
+                asio::read(sock, asio::buffer(buf));
+                auto msg = DnsMessage::parse(buf.data(), len);
+                if (!msg || !msg->hasQuestions()) return;
+                auto reply = r->query(*msg);
+                if (!reply) {
+                    reply = DnsMessage::createError(*msg, DnsRcode::ServFail);
+                    if (reply) PerfMonitor::instance().recordError();
+                }
+                auto wire = reply->pack();
+                uint16_t resp_len = htons(wire.size());
+                std::vector<asio::const_buffer> bufs;
+                bufs.push_back(asio::buffer(&resp_len, 2));
+                bufs.push_back(asio::buffer(wire));
+                asio::write(sock, bufs);
+            } catch (const std::exception&) {}
+        }).detach();
+    }
+}
+
+void DnsServer::perfMonitorLoop() {
+    while (running_) {
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        PerfMonitor::instance().recordThreadPoolLoad(dnsPool().pending());
+        int rec = AutoTuner::instance().recommendedThreads();
+        if (rec != static_cast<int>(dnsPool().workerCount())) {
+            dnsPool().resize(rec);
+            LOG_DEBUG("ThreadPool resized to " + std::to_string(rec) + " (was " +
+                      std::to_string(dnsPool().workerCount()) + ")");
+        }
+    }
+}
+
 void DnsServer::stop() {
     running_ = false;
     sys::error_code ec;
-    // Self-connect to unblock TCP accept()
+
+    // Stop accepting new work
+    tcpAcceptor_.close(ec);
+    dnsPool().shutdown();
+
+    // Self-connect to unblock TCP accept thread
     auto colon = addr_.find(':');
     if (colon != std::string::npos && colon + 1 < addr_.size()) {
         try {
@@ -161,14 +227,8 @@ void DnsServer::stop() {
             ec.clear();
         } catch (...) {}
     }
-    tcpAcceptor_.close(ec);
-    udpSocket_.close(ec);
-    ioCtx_.stop();
-    dnsPool().shutdown();
 
-    // Send dummy UDP packets to unblock worker receive_from() calls.
-    // Each kicker binds to its own ephemeral port so SO_REUSEPORT
-    // distributes them across all workers (not just one).
+    // Send dummy UDP packets to unblock worker receive_from() calls
     for (int i = 0; i < NUM_WORKERS; i++) {
         try {
             asio::io_context tmp;
@@ -181,8 +241,18 @@ void DnsServer::stop() {
         } catch (...) {}
     }
 
+    // Wait for all pool workers to finish their in-flight tasks
     for (auto& t : workerThreads_)
         if (t.joinable()) t.join();
+    if (tcpAcceptThread_.joinable()) tcpAcceptThread_.join();
+    if (perfMonitorThread_.joinable()) perfMonitorThread_.join();
+
+    // All work is done — safe to close sockets and stop io_context
+    if (udpSocket_) {
+        udpSocket_->close(ec);
+        udpSocket_.reset();
+    }
+    ioCtx_.stop();
 }
 
 void DnsServer::listenAndServe() {
@@ -198,18 +268,19 @@ void DnsServer::listenAndServe() {
     sys::error_code ec;
 
     // Main UDP socket (worker 0)
+    udpSocket_ = std::make_shared<asio::ip::udp::socket>(ioCtx_);
     asio::ip::udp::endpoint udpEndpoint(asio::ip::make_address(host), portNum);
-    udpSocket_.open(udpEndpoint.protocol(), ec);
+    udpSocket_->open(udpEndpoint.protocol(), ec);
     if (ec) { LOG_ERROR("Failed to open UDP socket: " + ec.message()); return; }
-    udpSocket_.set_option(asio::socket_base::reuse_address(true), ec);
+    udpSocket_->set_option(asio::socket_base::reuse_address(true), ec);
 
     // SO_REUSEPORT for all workers
     {
         int reuse = 1;
-        setsockopt(udpSocket_.native_handle(), SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse));
+        setsockopt(udpSocket_->native_handle(), SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse));
     }
 
-    udpSocket_.bind(udpEndpoint, ec);
+    udpSocket_->bind(udpEndpoint, ec);
     if (ec) { LOG_ERROR("Failed to bind UDP: " + ec.message()); return; }
 
     // Start async receive on main socket (also workers via SO_REUSEPORT)
@@ -245,59 +316,10 @@ void DnsServer::listenAndServe() {
     if (ec) {
         LOG_WARN("TCP DNS disabled — UDP only");
     } else {
-    std::thread tcpThread([this]() {
-        while (running_) {
-            sys::error_code ec;
-            tcp::socket socket(ioCtx_);
-            tcpAcceptor_.accept(socket, ec);
-            if (ec) {
-                if (running_) LOG_ERROR("TCP accept error: " + ec.message());
-                break;
-            }
-            auto r = resolver_;
-            std::thread([sock = std::move(socket), r]() mutable {
-                try {
-                    sock.set_option(tcp::no_delay(true));
-                    uint16_t net_len;
-                    asio::read(sock, asio::buffer(&net_len, 2));
-                    uint16_t len = ntohs(net_len);
-                    if (len < 12 || len > 65535) return;
-                    std::vector<uint8_t> buf(len);
-                    asio::read(sock, asio::buffer(buf));
-                    auto msg = DnsMessage::parse(buf.data(), len);
-                    if (!msg || !msg->hasQuestions()) return;
-                    auto reply = r->query(*msg);
-                    if (!reply) {
-                        reply = DnsMessage::createError(*msg, DnsRcode::ServFail);
-                        if (reply) PerfMonitor::instance().recordError();
-                    }
-                    auto wire = reply->pack();
-                    uint16_t resp_len = htons(wire.size());
-                    std::vector<asio::const_buffer> bufs;
-                    bufs.push_back(asio::buffer(&resp_len, 2));
-                    bufs.push_back(asio::buffer(wire));
-                    asio::write(sock, bufs);
-                } catch (const std::exception&) {}
-            }).detach();
-        }
-    });
-    tcpThread.detach();
+        tcpAcceptThread_ = std::thread([this]() { tcpAcceptLoop(); });
     }
 
-    // Report pool load and resize periodically
-    std::thread perfThread([this]() {
-        while (running_) {
-            std::this_thread::sleep_for(std::chrono::seconds(2));
-            PerfMonitor::instance().recordThreadPoolLoad(dnsPool().pending());
-            int rec = AutoTuner::instance().recommendedThreads();
-            if (rec != static_cast<int>(dnsPool().workerCount())) {
-                dnsPool().resize(rec);
-                LOG_DEBUG("ThreadPool resized to " + std::to_string(rec) + " (was " +
-                          std::to_string(dnsPool().workerCount()) + ")");
-            }
-        }
-    });
-    perfThread.detach();
+    perfMonitorThread_ = std::thread([this]() { perfMonitorLoop(); });
 
     // Main thread runs io_ctx for TCP accept
     ioCtx_.run();
@@ -355,9 +377,10 @@ void DnsServer::udpWorker(int id, uint16_t port) {
             auto res = resolver_;
             auto over = overrides_;
             auto unq = unqUpstream_;
+            auto sock = udpSocket_;
 
-            dnsPool().enqueue([this, data, remote, res, over, unq]() {
-                handleQuery(data->data(), data->size(), remote, res, over, unq);
+            dnsPool().enqueue([data, remote, res, over, unq, sock]() {
+                handleQuery(data->data(), data->size(), remote, res, over, unq, sock);
             });
         }
     } catch (const std::exception& e) {
@@ -366,7 +389,7 @@ void DnsServer::udpWorker(int id, uint16_t port) {
 }
 
 void DnsServer::startUdpReceive() {
-    udpSocket_.async_receive_from(
+    udpSocket_->async_receive_from(
         asio::buffer(recvBuf_), remoteEndpoint_,
         std::bind(&DnsServer::onUdpReceive, this,
                   std::placeholders::_1, std::placeholders::_2));
@@ -393,9 +416,10 @@ void DnsServer::onUdpReceive(sys::error_code ec, size_t len) {
     auto resolver = resolver_;
     auto overrides = overrides_;
     auto unqUpstream = unqUpstream_;
+    auto sock = udpSocket_;
 
-    dnsPool().enqueue([this, data, remote, resolver, overrides, unqUpstream]() {
-        handleQuery(data->data(), data->size(), remote, resolver, overrides, unqUpstream);
+    dnsPool().enqueue([data, remote, resolver, overrides, unqUpstream, sock]() {
+        handleQuery(data->data(), data->size(), remote, resolver, overrides, unqUpstream, sock);
     });
 
     startUdpReceive();
@@ -405,7 +429,8 @@ void DnsServer::handleQuery(const uint8_t* data, size_t len,
                              asio::ip::udp::endpoint remote,
                              std::shared_ptr<Resolver> resolver,
                              DomainMap overrides,
-                             std::string unqUpstream) {
+                             std::string unqUpstream,
+                             std::shared_ptr<asio::ip::udp::socket> sock) {
     try {
         auto req = DnsMessage::parse(data, len);
         if (!req || !req->hasQuestions()) return;
@@ -427,18 +452,18 @@ void DnsServer::handleQuery(const uint8_t* data, size_t len,
         if (overrides.getMostSpecific(q.qname, overrideAddr)) {
             try {
                 asio::io_context ctx;
-                asio::ip::udp::socket sock(ctx);
+                asio::ip::udp::socket tmpSock(ctx);
                 asio::ip::udp::resolver resolv(ctx);
                 auto colon = overrideAddr.find(':');
                 std::string ovHost = (colon != std::string::npos) ? overrideAddr.substr(0, colon) : overrideAddr;
                 std::string ovPort = (colon != std::string::npos) ? overrideAddr.substr(colon + 1) : "53";
                 auto eps = resolv.resolve(ovHost, ovPort);
-                sock.open(asio::ip::udp::v4());
+                tmpSock.open(asio::ip::udp::v4());
                 auto wire = req->pack();
-                sock.send_to(asio::buffer(wire), *eps.begin());
+                tmpSock.send_to(asio::buffer(wire), *eps.begin());
                 std::array<uint8_t, 4096> respBuf;
                 asio::ip::udp::endpoint from;
-                size_t n = sock.receive_from(asio::buffer(respBuf), from);
+                size_t n = tmpSock.receive_from(asio::buffer(respBuf), from);
                 reply = DnsMessage::parse(respBuf.data(), n);
                 if (reply) reply->header.id = req->header.id;
             } catch (const std::exception& e) {
@@ -454,18 +479,18 @@ void DnsServer::handleQuery(const uint8_t* data, size_t len,
             if (isUnq) {
                 try {
                     asio::io_context ctx;
-                    asio::ip::udp::socket sock(ctx);
+                    asio::ip::udp::socket tmpSock(ctx);
                     asio::ip::udp::resolver resolv(ctx);
                     auto colon = unqUpstream.find(':');
                     std::string uHost = (colon != std::string::npos) ? unqUpstream.substr(0, colon) : unqUpstream;
                     std::string uPort = (colon != std::string::npos) ? unqUpstream.substr(colon + 1) : "53";
                     auto eps = resolv.resolve(uHost, uPort);
-                    sock.open(asio::ip::udp::v4());
+                    tmpSock.open(asio::ip::udp::v4());
                     auto wire = req->pack();
-                    sock.send_to(asio::buffer(wire), *eps.begin());
+                    tmpSock.send_to(asio::buffer(wire), *eps.begin());
                     std::array<uint8_t, 4096> respBuf;
                     asio::ip::udp::endpoint from;
-                    size_t n = sock.receive_from(asio::buffer(respBuf), from);
+                    size_t n = tmpSock.receive_from(asio::buffer(respBuf), from);
                     reply = DnsMessage::parse(respBuf.data(), n);
                     if (reply) reply->header.id = req->header.id;
                 } catch (const std::exception& e) {
@@ -486,12 +511,14 @@ void DnsServer::handleQuery(const uint8_t* data, size_t len,
         }
 
         auto wire = reply->pack();
-        // Non-blocking async send — no mutex contention
+        // Serialize send through io_context to avoid concurrent socket access
         auto buf = std::make_shared<std::vector<uint8_t>>(std::move(wire));
-        udpSocket_.async_send_to(asio::buffer(*buf), remote,
-            [buf](sys::error_code ec, size_t) {
-                if (ec) LOG_ERROR("UDP send error: " + ec.message());
-            });
+        asio::post(sock->get_executor(), [sock, buf, remote]() {
+            sock->async_send_to(asio::buffer(*buf), remote,
+                [buf](sys::error_code ec, size_t) {
+                    if (ec) LOG_ERROR("UDP send error: " + ec.message());
+                });
+        });
 
     } catch (const std::exception& e) {
         LOG_ERROR("Error handling DNS query: " + std::string(e.what()));

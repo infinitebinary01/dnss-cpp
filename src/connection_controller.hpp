@@ -4,6 +4,7 @@
 
 #include <string>
 #include <vector>
+#include <deque>
 #include <memory>
 #include <functional>
 #include <atomic>
@@ -67,10 +68,16 @@ private:
         bool reconnectPending = false;
     };
 
+    struct ReconnectWork {
+        asio::ssl::stream<asio::ip::tcp::socket>* stream;
+        std::string host, port, target;
+    };
+
     // Background maintenance loop
     void run();
     bool healthCheck(ManagedConn& mc);
-    void reconnectAsync(size_t idx);
+    void reconnectStream(ReconnectWork work);
+    void reconnectLoop();
 
     static void enableTcpKeepAlive(asio::ip::tcp::socket& socket);
 
@@ -80,6 +87,13 @@ private:
     mutable std::mutex mutex_;
     std::vector<ManagedConn> managed_;
     OpenFunc openFunc_;
+
+    // Single reconnect worker thread — avoids thread-per-failure storms
+    std::thread reconnectWorker_;
+    std::mutex reconnectMutex_;
+    std::condition_variable reconnectCv_;
+    bool reconnectStop_ = false;
+    std::deque<ReconnectWork> reconnectQueue_;
 
     std::atomic<int> connectedCount_{0};
     std::atomic<int> totalCount_{0};

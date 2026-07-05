@@ -46,9 +46,9 @@ void HttpsServer::listenAndServe() {
     acceptor_.listen(asio::socket_base::max_listen_connections, ec);
 
     // SSL context (used only in TLS mode)
-    std::unique_ptr<ssl::context> sslCtx;
+    std::shared_ptr<ssl::context> sslCtx;
     if (!insecure_) {
-        sslCtx = std::make_unique<ssl::context>(ssl::context::tlsv12_server);
+        sslCtx = std::make_shared<ssl::context>(ssl::context::tlsv12_server);
         sslCtx->use_certificate_chain_file(certFile_, ec);
         if (ec) { LOG_ERROR("Failed to load cert: " + ec.message()); return; }
         sslCtx->use_private_key_file(keyFile_, ssl::context::pem, ec);
@@ -63,11 +63,11 @@ void HttpsServer::listenAndServe() {
             break;
         }
 
-        std::thread([this, sock = std::move(socket), &sslCtx]() mutable {
+        std::thread([sock = std::move(socket), sslCtx, upstream = upstream_, insecure = insecure_]() mutable {
             try {
                 beast::tcp_stream stream(std::move(sock));
 
-                if (!insecure_ && sslCtx) {
+                if (!insecure && sslCtx) {
                     // TLS handshake
                     ssl::stream<beast::tcp_stream&> sslStream(stream, *sslCtx);
                     sslStream.handshake(ssl::stream_base::server);
@@ -94,9 +94,9 @@ void HttpsServer::listenAndServe() {
                                 asio::ip::udp::socket dnsSock(ctx);
                                 asio::ip::udp::resolver resolv(ctx);
 
-                                auto colon = upstream_.find(':');
-                                std::string upHost = (colon != std::string::npos) ? upstream_.substr(0, colon) : upstream_;
-                                std::string upPort = (colon != std::string::npos) ? upstream_.substr(colon + 1) : "53";
+                                auto colon = upstream.find(':');
+                                std::string upHost = (colon != std::string::npos) ? upstream.substr(0, colon) : upstream;
+                                std::string upPort = (colon != std::string::npos) ? upstream.substr(colon + 1) : "53";
 
                                 auto eps = resolv.resolve(upHost, upPort);
                                 dnsSock.open(asio::ip::udp::v4());
@@ -174,9 +174,9 @@ void HttpsServer::listenAndServe() {
                                 asio::ip::udp::socket dnsSock(ctx);
                                 asio::ip::udp::resolver resolv(ctx);
 
-                                auto colon = upstream_.find(':');
-                                std::string upHost = (colon != std::string::npos) ? upstream_.substr(0, colon) : upstream_;
-                                std::string upPort = (colon != std::string::npos) ? upstream_.substr(colon + 1) : "53";
+                                auto colon = upstream.find(':');
+                                std::string upHost = (colon != std::string::npos) ? upstream.substr(0, colon) : upstream;
+                                std::string upPort = (colon != std::string::npos) ? upstream.substr(colon + 1) : "53";
 
                                 auto eps = resolv.resolve(upHost, upPort);
                                 dnsSock.open(asio::ip::udp::v4());

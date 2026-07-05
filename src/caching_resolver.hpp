@@ -56,7 +56,6 @@ private:
         DnsMessagePtr msg;
         std::chrono::seconds ttl;
         std::chrono::steady_clock::time_point expiresAt;
-        DnsQuestion question;
     };
 
     // L1 turbo cache — per-entry spinlock, direct-mapped hot cache
@@ -92,7 +91,7 @@ private:
     std::atomic<int64_t> turboHits_{0};
 
     // Adaptive prewarm: track popular domains
-    std::unordered_map<std::string, std::atomic<uint64_t>> prewarmTracker_;
+    std::unordered_map<std::string, uint64_t> prewarmTracker_;
     std::mutex prewarmMutex_;
     void doAdaptivePrewarm();
 

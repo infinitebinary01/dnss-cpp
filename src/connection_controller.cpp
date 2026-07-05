@@ -8,6 +8,7 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <thread>
 #include <chrono>
+#include <deque>
 #include <sstream>
 #include <cstring>
 #include <cstdint>
@@ -42,11 +43,18 @@ void ConnectionController::start() {
     if (running_) return;
     running_ = true;
     thread_ = std::thread([this]() { run(); });
+    reconnectWorker_ = std::thread([this]() { reconnectLoop(); });
 }
 
 void ConnectionController::stop() {
     running_ = false;
     if (thread_.joinable()) thread_.join();
+    {
+        std::lock_guard<std::mutex> lk(reconnectMutex_);
+        reconnectStop_ = true;
+    }
+    reconnectCv_.notify_all();
+    if (reconnectWorker_.joinable()) reconnectWorker_.join();
 }
 
 void ConnectionController::manage(const std::string& host, const std::string& port,
@@ -55,7 +63,17 @@ void ConnectionController::manage(const std::string& host, const std::string& po
                                    std::atomic<bool>* connected) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto now = std::chrono::steady_clock::now();
-    managed_.push_back({host, port, target, stream, connected, now, now, 0, false});
+    ManagedConn mc;
+    mc.host = host;
+    mc.port = port;
+    mc.target = target;
+    mc.stream = stream;
+    mc.connected = connected;
+    mc.lastUse = now;
+    mc.lastCheck = now;
+    mc.failures = 0;
+    mc.reconnectPending = false;
+    managed_.push_back(std::move(mc));
     totalCount_.store(managed_.size());
     if (connected && connected->load()) {
         connectedCount_.fetch_add(1);
@@ -90,11 +108,6 @@ void ConnectionController::notifyUsed(asio::ssl::stream<asio::ip::tcp::socket>* 
 }
 
 void ConnectionController::notifyFailure(asio::ssl::stream<asio::ip::tcp::socket>* stream) {
-    std::string host, port, target;
-    asio::ssl::stream<asio::ip::tcp::socket>* strm = nullptr;
-    size_t idx = 0;
-    bool shouldReconnect = false;
-
     {
         std::lock_guard<std::mutex> lock(mutex_);
         for (size_t i = 0; i < managed_.size(); ++i) {
@@ -104,40 +117,21 @@ void ConnectionController::notifyFailure(asio::ssl::stream<asio::ip::tcp::socket
                     connectedCount_.fetch_sub(1);
                 if (!managed_[i].reconnectPending) {
                     managed_[i].reconnectPending = true;
-                    host = managed_[i].host;
-                    port = managed_[i].port;
-                    target = managed_[i].target;
-                    strm = managed_[i].stream;
-                    idx = i;
-                    shouldReconnect = true;
+                    ReconnectWork work;
+                    work.stream = stream;
+                    work.host = managed_[i].host;
+                    work.port = managed_[i].port;
+                    work.target = managed_[i].target;
+                    {
+                        std::lock_guard<std::mutex> lk(reconnectMutex_);
+                        reconnectQueue_.push_back(std::move(work));
+                    }
+                    reconnectCv_.notify_one();
                 }
                 return;
             }
         }
     }
-
-    if (shouldReconnect && strm) {
-        std::thread([this, host, port, target, strm, idx]() {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            if (!openFunc_) return;
-            boost::system::error_code ec;
-            strm->next_layer().close(ec);
-            bool ok = openFunc_(host, port, target, *strm, ec);
-            if (ok) enableTcpKeepAlive(strm->next_layer());
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (idx < managed_.size() && managed_[idx].stream == strm) {
-                managed_[idx].reconnectPending = false;
-                if (ok && managed_[idx].connected) {
-                    managed_[idx].connected->store(true);
-                    connectedCount_.fetch_add(1);
-                    managed_[idx].lastUse = std::chrono::steady_clock::now();
-                    managed_[idx].lastCheck = std::chrono::steady_clock::now();
-                    managed_[idx].failures = 0;
-                }
-            }
-        }).detach();
-    }
-
 }
 
 void ConnectionController::probeAllIdle() {
@@ -169,28 +163,31 @@ void ConnectionController::probeAllIdle() {
     LOG_DEBUG("Probing " + std::to_string(toCheck.size()) + " idle connections (high latency trigger)");
 
     for (auto& w : toCheck) {
-        std::thread([this, idx = w.idx, strm = w.stream, mc = w.snapshot]() {
-            ManagedConn local = mc;
-            local.stream = strm;
-            if (!healthCheck(local)) {
-                LOG_DEBUG("Idle connection failed health check, reconnecting...");
+        ManagedConn local = w.snapshot;
+        local.stream = w.stream;
+        if (!healthCheck(local)) {
+            LOG_DEBUG("Idle connection failed health check, reconnecting...");
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (w.idx < managed_.size() && managed_[w.idx].stream == w.stream) {
+                if (managed_[w.idx].connected && managed_[w.idx].connected->exchange(false))
+                    connectedCount_.fetch_sub(1);
                 boost::system::error_code ec;
-                if (strm) strm->next_layer().close(ec);
-                std::lock_guard<std::mutex> lock(mutex_);
-                if (idx < managed_.size() && managed_[idx].stream == strm) {
-                    if (managed_[idx].connected && managed_[idx].connected->exchange(false))
-                        connectedCount_.fetch_sub(1);
-                    if (!managed_[idx].reconnectPending) {
-                        managed_[idx].reconnectPending = true;
-                        std::thread([this, idx]() {
-                            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                            std::lock_guard<std::mutex> lk(mutex_);
-                            reconnectAsync(idx);
-                        }).detach();
+                if (w.stream) w.stream->next_layer().close(ec);
+                if (!managed_[w.idx].reconnectPending) {
+                    managed_[w.idx].reconnectPending = true;
+                    ReconnectWork rw;
+                    rw.stream = w.stream;
+                    rw.host = managed_[w.idx].host;
+                    rw.port = managed_[w.idx].port;
+                    rw.target = managed_[w.idx].target;
+                    {
+                        std::lock_guard<std::mutex> lk(reconnectMutex_);
+                        reconnectQueue_.push_back(std::move(rw));
                     }
+                    reconnectCv_.notify_one();
                 }
             }
-        }).detach();
+        }
     }
 }
 
@@ -237,19 +234,24 @@ void ConnectionController::run() {
             local.stream = w.stream;
             if (!healthCheck(local)) {
                 LOG_DEBUG("Health check failed, reconnecting...");
-                boost::system::error_code ec;
-                if (w.stream) w.stream->next_layer().close(ec);
                 std::lock_guard<std::mutex> lock(mutex_);
                 if (w.idx < managed_.size() && managed_[w.idx].stream == w.stream) {
                     if (managed_[w.idx].connected && managed_[w.idx].connected->exchange(false))
                         connectedCount_.fetch_sub(1);
+                    boost::system::error_code ec;
+                    if (w.stream) w.stream->next_layer().close(ec);
                     if (!managed_[w.idx].reconnectPending) {
                         managed_[w.idx].reconnectPending = true;
-                        std::thread([this, idx = w.idx]() {
-                            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                            std::lock_guard<std::mutex> lk(mutex_);
-                            reconnectAsync(idx);
-                        }).detach();
+                        ReconnectWork rw;
+                        rw.stream = w.stream;
+                        rw.host = managed_[w.idx].host;
+                        rw.port = managed_[w.idx].port;
+                        rw.target = managed_[w.idx].target;
+                        {
+                            std::lock_guard<std::mutex> lk(reconnectMutex_);
+                            reconnectQueue_.push_back(std::move(rw));
+                        }
+                        reconnectCv_.notify_one();
                     }
                 }
             }
@@ -258,7 +260,17 @@ void ConnectionController::run() {
         for (auto& idx : reconnects) {
             std::lock_guard<std::mutex> lock(mutex_);
             if (idx < managed_.size()) {
-                reconnectAsync(idx);
+                auto& mc = managed_[idx];
+                ReconnectWork rw;
+                rw.stream = mc.stream;
+                rw.host = mc.host;
+                rw.port = mc.port;
+                rw.target = mc.target;
+                {
+                    std::lock_guard<std::mutex> lk(reconnectMutex_);
+                    reconnectQueue_.push_back(std::move(rw));
+                }
+                reconnectCv_.notify_one();
             }
         }
     }
@@ -267,15 +279,18 @@ void ConnectionController::run() {
 // ---------- Health check ----------
 
 std::vector<uint8_t> ConnectionController::makeHealthQuery() {
-    std::vector<uint8_t> buf(17, 0);
-    buf[0] = 0x00; buf[1] = 0x00;
-    buf[2] = 0x01; buf[3] = 0x00;
-    buf[4] = 0x00; buf[5] = 0x01;
-    buf[8] = 0x00; buf[9] = 0x00;
-    buf[10] = 0x00; buf[11] = 0x00;
-    buf.push_back(0x00);
-    buf.push_back(0x00); buf.push_back(0x01);
-    buf.push_back(0x00); buf.push_back(0x01);
+    static const std::vector<uint8_t> buf = []() {
+        std::vector<uint8_t> b(17, 0);
+        b[0] = 0x00; b[1] = 0x00;
+        b[2] = 0x01; b[3] = 0x00;
+        b[4] = 0x00; b[5] = 0x01;
+        b[8] = 0x00; b[9] = 0x00;
+        b[10] = 0x00; b[11] = 0x00;
+        b.push_back(0x00);
+        b.push_back(0x00); b.push_back(0x01);
+        b.push_back(0x00); b.push_back(0x01);
+        return b;
+    }();
     return buf;
 }
 
@@ -306,6 +321,7 @@ bool ConnectionController::healthCheck(ManagedConn& mc) {
 
     std::vector<uint8_t> respBuf;
     respBuf.reserve(1024);
+    size_t headerEndPos = 0;
     bool headerDone = false;
     size_t contentLength = 0;
     bool isChunked = false;
@@ -321,39 +337,40 @@ bool ConnectionController::healthCheck(ManagedConn& mc) {
         memcpy(respBuf.data() + oldSize, chunk.data(), n);
 
         if (!headerDone) {
-            std::string respStr(reinterpret_cast<char*>(respBuf.data()), respBuf.size());
-            auto headerEnd = respStr.find("\r\n\r\n");
-            if (headerEnd != std::string::npos) {
+            auto raw = reinterpret_cast<const char*>(respBuf.data());
+            std::string_view sv(raw, respBuf.size());
+            auto he = sv.find("\r\n\r\n");
+            if (he != std::string_view::npos) {
                 headerDone = true;
-                std::string headerPart = respStr.substr(0, headerEnd);
-                std::string lowHead = headerPart;
-                for (auto& c : lowHead) c = tolower(c);
-                auto clPos = lowHead.find("content-length: ");
-                if (clPos != std::string::npos) {
-                    clPos += 16;
-                    auto clEnd = lowHead.find("\r\n", clPos);
-                    contentLength = std::stoul(headerPart.substr(clPos, clEnd - clPos));
+                headerEndPos = he;
+                auto hdr = sv.substr(0, he);
+                auto clTag = hdr.find("Content-Length: ");
+                if (clTag != std::string_view::npos) {
+                    clTag += 16;
+                    auto clEnd = hdr.find("\r\n", clTag);
+                    if (clEnd != std::string_view::npos) {
+                        char clStr[32];
+                        size_t clSize = std::min(clEnd - clTag, sizeof(clStr) - 1);
+                        memcpy(clStr, raw + clTag, clSize);
+                        clStr[clSize] = '\0';
+                        contentLength = std::stoul(clStr);
+                    }
                 }
-                if (lowHead.find("chunked") != std::string::npos) {
+                if (hdr.find("chunked") != std::string_view::npos) {
                     isChunked = true;
                 }
                 if (contentLength > 0) {
-                    size_t bodySoFar = respBuf.size() - (headerEnd + 4);
+                    size_t bodySoFar = respBuf.size() - (he + 4);
                     if (bodySoFar >= contentLength) break;
                 }
                 if (!isChunked && contentLength == 0) break;
             }
-        } else {
-            if (contentLength > 0) {
-                std::string tmpStr(reinterpret_cast<char*>(respBuf.data()), respBuf.size());
-                auto he = tmpStr.find("\r\n\r\n");
-                if (he != std::string::npos) {
-                    size_t bodySoFar = respBuf.size() - (he + 4);
-                    if (bodySoFar >= contentLength) break;
-                }
-            } else if (!isChunked) {
-                break;
-            }
+        }
+        if (contentLength > 0) {
+            size_t bodySoFar = respBuf.size() - (headerEndPos + 4);
+            if (bodySoFar >= contentLength) break;
+        } else if (!isChunked && headerDone) {
+            break;
         }
     }
 
@@ -368,24 +385,62 @@ bool ConnectionController::healthCheck(ManagedConn& mc) {
     return true;
 }
 
-// Caller MUST hold mutex_
-void ConnectionController::reconnectAsync(size_t idx) {
-    if (idx >= managed_.size()) return;
-    auto& mc = managed_[idx];
-    if (!openFunc_ || !mc.stream || !mc.connected) return;
+// Single reconnect worker thread — processes queued reconnects
+void ConnectionController::reconnectLoop() {
+    while (true) {
+        ReconnectWork work;
+        {
+            std::unique_lock<std::mutex> lk(reconnectMutex_);
+            reconnectCv_.wait(lk, [this] {
+                return reconnectStop_ || !reconnectQueue_.empty();
+            });
+            if (reconnectStop_ && reconnectQueue_.empty()) break;
+            if (reconnectQueue_.empty()) continue;
+            work = std::move(reconnectQueue_.front());
+            reconnectQueue_.pop_front();
+        }
+        reconnectStream(std::move(work));
+    }
+}
+
+// Reconnect by stream pointer — look up entry under lock, reconnect without lock,
+// then update state under lock. Inspired by notifyFailure's existing pattern.
+void ConnectionController::reconnectStream(ReconnectWork work) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    ManagedConn snapshot;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& mc : managed_) {
+            if (mc.stream == work.stream) {
+                if (!openFunc_ || !mc.connected) return;
+                boost::system::error_code ec;
+                mc.stream->next_layer().close(ec);
+                snapshot = mc;
+                break;
+            }
+        }
+    }
+    if (!snapshot.stream) return;
 
     boost::system::error_code ec;
-    mc.stream->next_layer().close(ec);
+    bool ok = openFunc_(snapshot.host, snapshot.port, snapshot.target, *snapshot.stream, ec);
+    if (ok) enableTcpKeepAlive(snapshot.stream->next_layer());
 
-    bool ok = openFunc_(mc.host, mc.port, mc.target, *mc.stream, ec);
-    if (ok) enableTcpKeepAlive(mc.stream->next_layer());
-
-    mc.reconnectPending = false;
-    if (ok && mc.connected) {
-        mc.connected->store(true);
-        connectedCount_.fetch_add(1);
-        mc.lastUse = std::chrono::steady_clock::now();
-        mc.lastCheck = std::chrono::steady_clock::now();
-        mc.failures = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& mc : managed_) {
+            if (mc.stream == work.stream) {
+                mc.reconnectPending = false;
+                if (ok && mc.connected) {
+                    mc.connected->store(true);
+                    connectedCount_.fetch_add(1);
+                    mc.lastUse = std::chrono::steady_clock::now();
+                    mc.lastCheck = std::chrono::steady_clock::now();
+                    mc.failures = 0;
+                }
+                return;
+            }
+        }
     }
 }
