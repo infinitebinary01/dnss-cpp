@@ -403,6 +403,7 @@ void DnsServer::udpWorker(int id, uint16_t port) {
             auto unq = unqUpstream_;
             auto sock = udpSocket_;
 
+            PerfMonitor::instance().recordDnsQuery();
             if (!dnsPool().tryEnqueue([data, remote, res, over, unq, sock]() {
                     handleQuery(data->data(), data->size(), remote, res, over, unq, sock);
                 })) {
@@ -454,6 +455,7 @@ void DnsServer::onUdpReceive(sys::error_code ec, size_t len) {
     auto unqUpstream = unqUpstream_;
     auto sock = udpSocket_;
 
+    PerfMonitor::instance().recordDnsQuery();
     if (!dnsPool().tryEnqueue([data, remote, resolver, overrides, unqUpstream, sock]() {
             handleQuery(data->data(), data->size(), remote, resolver, overrides, unqUpstream, sock);
         })) {

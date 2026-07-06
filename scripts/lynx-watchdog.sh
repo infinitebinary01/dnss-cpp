@@ -19,6 +19,9 @@ PROXY_PORT="8000"
 PROXY_URL="http://$PROXY_HOST:$PROXY_PORT/"
 NO_PROXY="localhost,127.0.0.1,::1,192.168.0.0/16,10.0.0.0/8"
 
+WATCHDOG_PID="/tmp/lynx-watchdog.pid"
+trap 'rm -f "$WATCHDOG_PID"' EXIT
+
 LAST_MODE=""
 
 log() {

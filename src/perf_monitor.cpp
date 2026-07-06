@@ -13,6 +13,9 @@ PerfMonitor& PerfMonitor::instance() {
 void PerfMonitor::recordLatency(std::chrono::microseconds us) {
     auto idx = latencyRing_.writeIdx_.fetch_add(1, std::memory_order_relaxed);
     latencyRing_.latencies_[idx % WINDOW_SIZE].store(us.count(), std::memory_order_relaxed);
+}
+
+void PerfMonitor::recordDnsQuery() {
     counters_.queries_.fetch_add(1, std::memory_order_relaxed);
 }
 

@@ -23,6 +23,15 @@ h1{font-size:28px;font-weight:600;color:#1a73e8;margin-bottom:4px;}
 <p class='subtitle'>DNS-over-HTTPS proxy</p>
 
 <div class='version'>
+<h2>v0.6.1</h2>
+<p class='date'>2026-07-05</p>
+<ul>
+<li><b>Fix</b>: Error rate inflated &gt;100% in GUI — <code>queries_</code> was only incremented on successful DoH queries (in <code>recordLatency()</code>), but <code>errors_</code> grew independently from backpressure rejections. Denominator now includes every admitted DNS query via <code>recordDnsQuery()</code> at receive time.</li>
+<li><b>Fix</b>: Duplicate watchdog processes racing on proxy file — <code>ensure_watchdog()</code> switched from <code>pgrep -f</code> to PID file (<code>/tmp/lynx-watchdog.pid</code>) with <code>kill -0</code> check. Prevents stale or duplicate watchdogs from writing conflicting proxy state.</li>
+</ul>
+</div>
+
+<div class='version'>
 <h2>v0.6.0</h2>
 <p class='date'>2026-07-05</p>
 <ul>

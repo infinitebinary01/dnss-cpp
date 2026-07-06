@@ -30,6 +30,7 @@ public:
 
     void recordLatency(std::chrono::microseconds us);
     void recordDomainLatency(const std::string& domain, std::chrono::microseconds us);
+    void recordDnsQuery();
     void recordCacheHit();
     void recordCacheMiss();
     void recordError();

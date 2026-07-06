@@ -8,14 +8,19 @@ CFG="$PROJECT_DIR/config.json"
 LOG="/tmp/lynx-loop.log"
 WATCHDOG="$PROJECT_DIR/scripts/lynx-watchdog.sh"
 
+WATCHDOG_PID="/tmp/lynx-watchdog.pid"
+
 log() { echo "[$(date '+%H:%M:%S')] $*" >> "$LOG"; }
 
-# Start watchdog in background if not running
+# Start watchdog in background if not running (pid file prevents duplicates)
 ensure_watchdog() {
-    if ! pgrep -f "lynx-watchdog.sh" > /dev/null 2>&1; then
-        nohup "$WATCHDOG" --config="$CFG" > /dev/null 2>&1 &
-        log "watchdog started (pid $!)"
+    if [ -f "$WATCHDOG_PID" ] && kill -0 $(cat "$WATCHDOG_PID") 2>/dev/null; then
+        return
     fi
+    rm -f "$WATCHDOG_PID"
+    nohup "$WATCHDOG" --config="$CFG" > /dev/null 2>&1 &
+    echo $! > "$WATCHDOG_PID"
+    log "watchdog started (pid $!)"
 }
 
 log "lynx-loop started (pid $$)"
