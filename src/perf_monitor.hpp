@@ -20,6 +20,7 @@ struct PerfSnapshot {
     double connUtilization = 0;
     int activeConnections = 0;
     int threadPoolLoad = 0;
+    int threadPoolWorkers = 0;
 };
 
 using SupplementaryStatsFn = std::function<PerfSnapshot(PerfSnapshot)>;
@@ -36,6 +37,7 @@ public:
     void recordError();
     void recordConnUse(int active, int total);
     void recordThreadPoolLoad(int pending);
+    void recordThreadPoolWorkers(int workers);
 
     void setSupplementaryStats(SupplementaryStatsFn fn);
 
@@ -63,6 +65,7 @@ private:
     std::atomic<int> activeConns_{0};
     std::atomic<int> totalConns_{0};
     std::atomic<int> poolPending_{0};
+    std::atomic<int> poolWorkers_{0};
 
     mutable std::mutex statsFnMutex_;
     mutable SupplementaryStatsFn extraStatsFn_;

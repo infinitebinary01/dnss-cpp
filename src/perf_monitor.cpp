@@ -70,6 +70,10 @@ void PerfMonitor::recordThreadPoolLoad(int pending) {
     poolPending_.store(pending, std::memory_order_relaxed);
 }
 
+void PerfMonitor::recordThreadPoolWorkers(int workers) {
+    poolWorkers_.store(workers, std::memory_order_relaxed);
+}
+
 void PerfMonitor::setSupplementaryStats(SupplementaryStatsFn fn) {
     std::lock_guard<std::mutex> lock(statsFnMutex_);
     extraStatsFn_ = std::move(fn);
@@ -108,6 +112,7 @@ PerfSnapshot PerfMonitor::snapshot() const {
     s.connUtilization = totalC > 0 ? static_cast<double>(active) / totalC : 0;
     s.activeConnections = active;
     s.threadPoolLoad = poolPending_.load(std::memory_order_relaxed);
+    s.threadPoolWorkers = poolWorkers_.load(std::memory_order_relaxed);
 
     {
         std::lock_guard<std::mutex> lock(statsFnMutex_);

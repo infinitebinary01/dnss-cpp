@@ -128,6 +128,7 @@
     var total = d.connections.recommended || 1;
     var util = d.connections.utilization || 0;
     var pending_t = d.thread_pool.pending || 0;
+    var workers = d.thread_pool.workers || 1;
     var threads = d.thread_pool.recommended || 1;
     var refresh = d.auto_tuner.cache_refresh_pct || 0;
     var fanout = d.auto_tuner.fan_out;
@@ -167,8 +168,8 @@
       ? '+' + d.auto_tuner.connection_growth_per_cycle + '/cycle' : '--');
 
     txt('poolPending', pending_t);
-    txt('poolThreads', threads);
-    bar('poolBar', Math.min(pending_t / (threads || 1), 1) * 100 + '%', 'bar-cyan');
+    txt('poolThreads', workers);
+    bar('poolBar', Math.min(pending_t / workers, 1) * 100 + '%', 'bar-cyan');
 
     txt('tunerConn', total);
     txt('tunerThreads', threads);

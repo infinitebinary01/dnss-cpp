@@ -134,7 +134,7 @@ private:
 };
 
 static ThreadPool& dnsPool() {
-    static ThreadPool pool(8);
+    static ThreadPool pool(12);
     return pool;
 }
 
@@ -223,11 +223,13 @@ void DnsServer::perfMonitorLoop() {
     while (running_) {
         std::this_thread::sleep_for(std::chrono::seconds(2));
         PerfMonitor::instance().recordThreadPoolLoad(dnsPool().pending());
+        PerfMonitor::instance().recordThreadPoolWorkers(static_cast<int>(dnsPool().workerCount()));
         int rec = AutoTuner::instance().recommendedThreads();
-        if (rec != static_cast<int>(dnsPool().workerCount())) {
+        auto prevWorkers = dnsPool().workerCount();
+        if (rec != static_cast<int>(prevWorkers)) {
             dnsPool().resize(rec);
             LOG_DEBUG("ThreadPool resized to " + std::to_string(rec) + " (was " +
-                      std::to_string(dnsPool().workerCount()) + ")");
+                      std::to_string(prevWorkers) + ")");
         }
     }
 }

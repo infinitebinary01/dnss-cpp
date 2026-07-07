@@ -1,92 +1,100 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lynx DoH DNS</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: #0d1117; color: #c9d1d9; line-height: 1.6; padding: 2rem;
-  }
-  .container { max-width: 800px; margin: 0 auto; }
-  .logo-row { display: flex; align-items: center; gap: 1.2rem; margin-bottom: .3rem; }
-  h1 { color: #58a6ff; font-size: 2.2rem; }
-  .subtitle { color: #8b949e; font-size: 1.1rem; margin-bottom: 2rem; }
-  h2 { color: #58a6ff; margin: 1.5rem 0 .7rem; font-size: 1.3rem; }
-  p { margin-bottom: .8rem; }
-  .tag {
-    display: inline-block; background: #1f2937; color: #58a6ff;
-    padding: .2rem .7rem; border-radius: 4px; font-size: .85rem;
-    margin: .15rem .1rem;
-  }
-  .tag.goal { color: #f0883e; }
-  .code { background: #161b22; padding: 1rem; border-radius: 6px; font-family: "SF Mono", monospace; font-size: .85rem; overflow-x: auto; margin: .8rem 0; }
-  .badge { display: inline-block; background: #238636; color: #fff; padding: .15rem .5rem; border-radius: 3px; font-size: .75rem; }
-  hr { border: none; border-top: 1px solid #21262d; margin: 2rem 0; }
-  footer { color: #484f58; font-size: .85rem; text-align: center; margin-top: 2rem; }
-</style>
+<link rel="stylesheet" href="style.css">
+<script src="uPlot.min.js"></script>
+<link rel="stylesheet" href="uPlot.min.css">
+<link rel="icon" href="data:,">
 </head>
 <body>
-<div class="container">
-  <div class="logo-row">
-    <img src="logo.png" alt="Lynx DoH DNS" style="height:56px;border-radius:8px">
-    <h1>Lynx DoH DNS</h1>
+<canvas id="matrix"></canvas>
+<div id="app">
+  <header>
+    <div class="logo-row">
+      <img src="logo.png" alt="logo" class="logo" onerror="this.style.display='none'">
+      <h1>Lynx DoH DNS</h1>
+    </div>
+    <div class="ts" id="ts">--:--:--</div>
+  </header>
+
+  <div class="grid">
+    <div class="card">
+      <h2>LATENCY</h2>
+      <div class="stat-row"><span>AVG</span><span class="good" id="lat-avg">--</span></div>
+      <div class="stat-row"><span>P95</span><span id="lat-p95">--</span></div>
+      <div class="stat-row"><span>ERRORS</span><span id="err-rate">--</span></div>
+      <div class="stat-row"><span>QPS</span><span class="cyan" id="qps">--</span></div>
+    </div>
+
+    <div class="card">
+      <h2>CACHE</h2>
+      <div class="stat-row"><span>L1 TURBO</span><span id="turbo-hit">--</span></div>
+      <div class="stat-row"><span>L2 MAIN</span><span id="l2-hit">--</span></div>
+      <div class="stat-row"><span>TOTAL HIT</span><span id="cache-hit">--</span></div>
+      <div class="stat-row"><span>REFRESH</span><span class="cyan" id="cache-refresh">--</span></div>
+    </div>
+
+    <div class="card">
+      <h2>CONNECTIONS</h2>
+      <div class="stat-row"><span>ACTIVE</span><span id="conn-active">--</span></div>
+      <div class="stat-row"><span>UTILIZATION</span><span id="conn-util">--</span></div>
+      <div class="bar-track"><div class="bar-fill" id="conn-bar" style="width:0%"></div></div>
+      <div class="stat-row" style="margin-top:4px"><span>GROWTH</span><span class="cyan" id="tuner-growth">--</span></div>
+    </div>
+
+    <div class="card">
+      <h2>THREAD POOL</h2>
+      <div class="stat-row"><span>QUEUED</span><span id="pool-pending">--</span></div>
+      <div class="stat-row"><span>WORKERS</span><span id="pool-threads">--</span></div>
+      <div class="bar-track"><div class="bar-fill bar-cyan" id="pool-bar" style="width:0%"></div></div>
+    </div>
+
+    <div class="card">
+      <h2>AUTO-TUNER</h2>
+      <div class="stat-row"><span>CONNS</span><span id="tuner-conn">--</span></div>
+      <div class="stat-row"><span>THREADS</span><span id="tuner-threads">--</span></div>
+      <div class="stat-row"><span>REFRESH</span><span id="tuner-refresh">--</span></div>
+      <div class="stat-row"><span>FAN-OUT</span><span id="tuner-fanout">--</span></div>
+      <div class="stat-row"><span>TREND</span><span id="tuner-trend">--</span></div>
+    </div>
+
+    <div class="card">
+      <h2>SYSTEM</h2>
+      <div class="stat-row"><span>UPTIME</span><span class="good" id="sys-uptime">--</span></div>
+      <div class="stat-row"><span>QUERIES</span><span class="cyan" id="sys-queries">--</span></div>
+      <div class="stat-row"><span>MODE</span><span class="good" id="sys-mode">--</span></div>
+    </div>
   </div>
-  <div class="subtitle">High-performance DNS-over-HTTPS daemon</div>
 
-  <h2>What it does</h2>
-  <p>Accepts DNS queries on port 53 (UDP/TCP), resolves them via DNS-over-HTTPS (DoH) to <span class="tag">1.1.1.1</span>, and falls back to plain UDP DNS when the upstream or proxy is unreachable.</p>
-
-  <h2>Features</h2>
-  <p>
-    <span class="tag">DoH client</span>
-    <span class="tag">HTTP proxy support</span>
-    <span class="tag">Connection pooling (5-15)</span>
-    <span class="tag">Adaptive auto-tuning</span>
-    <span class="tag">LRU cache (preemptive refresh)</span>
-    <span class="tag">Rate limiter (100 qps/client)</span>
-    <span class="tag">SIMD name comparison (SSE4.2)</span>
-    <span class="tag">Zero-copy DNS parse</span>
-    <span class="tag">PID-style auto-tuner</span>
-    <span class="tag">Perf monitoring (lock-free)</span>
-  </p>
-
-  <h2>Quick start</h2>
-  <div class="code">
-sudo env https_proxy=http://PROXY_IP:PROXY_PORT/ \
-  ./build/lynx \
-  --dns_listen_addr=":53" \
-  --enable_dns_to_https \
-  --https_upstream="https://1.1.1.1/dns-query" \
-  --fallback_upstream="GATEWAY_IP:53" \
-  --log_level=info
+  <div class="chart-row">
+    <div class="card chart-card">
+      <h2>LATENCY HISTORY (last 120s)</h2>
+      <div id="chart"></div>
+    </div>
   </div>
 
-  <h2>Architecture</h2>
-  <p>The server runs on Boost.Asio with a thread pool (4 workers, auto-tuned up to 32). Incoming UDP queries are offloaded to the pool via a lock-free ring buffer. The DoH client maintains a pool of persistent HTTPS connections, auto-tuned between 5 and 15. An <span class="tag">AutoTuner</span> PID loop adjusts connections, threads, fan-out parallelism, and cache refresh thresholds every 5 seconds based on real-time latency and error metrics.</p>
-
-  <h2>Fallback</h2>
-  <p>When DoH fails (proxy down, network issues), queries are forwarded via plain UDP to the configured <span class="tag">--fallback_upstream</span>. This ensures DNS resolution continues working even when the internet link through the proxy is unavailable — using the gateway as a bootstrap resolver.</p>
-
-  <h2>Performance</h2>
-  <p>
-    <span class="badge">~112ms</span> uncached sequential &bullet;
-    <span class="badge">~43ms</span> cached &bullet;
-    <span class="badge">0-copy</span> DNS parsing
-  </p>
-  <p>Compiled with <span class="tag">-O3 -flto -march=native</span>. SIMD-accelerated name comparison, pre-allocated vectors, and connection keep-alive for maximum throughput.</p>
-
-  <h2>Switch script</h2>
-  <div class="code">
-sudo lynx-switch start    # stop legacy dnss, start lynx
-sudo lynx-switch stop     # stop lynx, restart legacy dnss
-sudo lynx-switch status   # check which is running
+  <div class="bottom-row">
+    <div class="card">
+      <h2>TOP DOMAINS BY LATENCY</h2>
+      <div id="top-domains"><div class="stat-row"><span>collecting...</span></div></div>
+    </div>
+    <div class="card">
+      <h2>DASHBOARD INFO</h2>
+      <div class="stat-row"><span>UPDATES</span><span class="good" id="update-rate">SSE real-time</span></div>
+      <div class="stat-row"><span>CHART</span><span class="good">uPlot canvas</span></div>
+      <div class="stat-row"><span>RENDER</span><span class="good">rAF batched</span></div>
+      <div class="stat-row" style="margin-top:8px">
+        <a href="/metrics">[METRICS]</a>
+        <a href="/api/stats">[JSON]</a>
+        <a href="/health">[HEALTH]</a>
+      </div>
+    </div>
   </div>
-
-  <hr>
-  <footer>Lynx DoH DNS</footer>
 </div>
+
+<script src="script.js"></script>
 </body>
 </html>

@@ -27,6 +27,9 @@ public:
     int countConnected() const override;
 
     void flushCache();
+    void setCacheFile(const std::string& path) { cacheFile_ = path; }
+    void saveCache();
+    void loadCache();
     size_t cacheSize() const;
     int64_t hits() const;
     int64_t misses() const;
@@ -59,7 +62,7 @@ private:
     };
 
     // L1 turbo cache — per-entry spinlock, direct-mapped hot cache
-    static constexpr size_t TURBO_SIZE = 1024;
+    static constexpr size_t TURBO_SIZE = 4096;
     struct TurboSlot {
         std::atomic<uint64_t> keyHash{0};
         std::atomic_flag lock = ATOMIC_FLAG_INIT;
@@ -90,13 +93,19 @@ private:
     std::atomic<int64_t> preemptiveRefreshes_{0};
     std::atomic<int64_t> turboHits_{0};
 
+    // Persistent disk cache
+    std::string cacheFile_;
+    static constexpr uint32_t CACHE_MAGIC = 0x4C594E58;
+    static constexpr uint32_t CACHE_VERSION = 1;
+
     // Adaptive prewarm: track popular domains
     std::unordered_map<std::string, uint64_t> prewarmTracker_;
     std::mutex prewarmMutex_;
     void doAdaptivePrewarm();
+    void warmupCache();
 
-    static constexpr size_t maxCacheSize = 2000;
-    static constexpr std::chrono::seconds minTTL{30};
+    static constexpr size_t maxCacheSize = 50000;
+    static constexpr std::chrono::seconds minTTL{120};
     static constexpr std::chrono::seconds maxTTL{7200};
     static constexpr std::chrono::seconds negativeTTL{30};
 

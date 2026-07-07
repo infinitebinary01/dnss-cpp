@@ -61,6 +61,7 @@ struct Config {
     std::string httpsUpstream2;
     std::string httpsClientCAFile;
     bool enableCache = true;
+    std::string cacheFile;
     bool enableHttpsToDns = false;
     std::string dnsUpstream = "8.8.8.8:53";
     std::string httpsCertFile;
@@ -211,6 +212,7 @@ static Config parseArgs(int argc, char* argv[]) {
             else if (k == "https_upstream") cfg.httpsUpstream = v;
             else if (k == "https_upstream2") cfg.httpsUpstream2 = v;
             else if (k == "https_client_cafile") cfg.httpsClientCAFile = v;
+            else if (k == "cache_file") cfg.cacheFile = v;
             else if (k == "enable_cache") cfg.enableCache = (v == "true" || v == "1" || v == "");
             else if (k == "enable_https_to_dns") cfg.enableHttpsToDns = (v == "true" || v == "1");
             else if (k == "dns_upstream") cfg.dnsUpstream = v;
@@ -330,6 +332,10 @@ int main(int argc, char* argv[]) {
         std::shared_ptr<CachingResolver> cacheResolver;
         if (cfg.enableCache) {
             auto cr = std::make_shared<CachingResolver>(std::move(rawResolver));
+            if (!cfg.cacheFile.empty()) {
+                cr->setCacheFile(cfg.cacheFile);
+                cr->loadCache();
+            }
             cacheResolver = cr;
             resolver = std::move(cr);
         } else {

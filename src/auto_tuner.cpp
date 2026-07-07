@@ -181,22 +181,30 @@ void AutoTuner::tune() {
 
     // Proxy saturation detection: if latency is high AND connections are already
     // moderate, more connections will only congest the proxy further. Shrink instead.
-    bool proxySaturated = (lat > 500 && curConn > MIN_CONNS) || (lat > 1000);
+    // Only trigger when threads are NOT the bottleneck (util < 0.7 means connections
+    // are underutilized — high latency is from the network, not connection congestion).
+    bool proxySaturated = (lat > 1000 && util < 0.7 && curConn > MIN_CONNS);
     if (!inTurbo) {
         if (proxySaturated) {
             newConn = std::max(curConn - 1, MIN_CONNS);
             if (newConn != curConn)
                 LOG_DEBUG("AI-Tuner: -1 connection (" +
                           std::to_string(newConn) + ") — proxy saturated");
-        } else if (consecutiveLowLoad_ >= 6 && curConn > MIN_CONNS) {
+        } else if (consecutiveLowLoad_ >= 3 && curConn > MIN_CONNS) {
             newConn = curConn - 1;
             LOG_DEBUG("AI-Tuner: -1 connection (" + std::to_string(newConn) + ") — low load");
         }
     }
 
-    // Only grow when proxy is NOT saturated and latency is acceptable
+    // Only grow when proxy is NOT saturated
     if (!inTurbo && !proxySaturated) {
-        if (util > 0.70 && trend > 3 && qps > 5 && curConn < MAX_CONNS) {
+        if (util > 0.90 && lat > 200 && curConn < MAX_CONNS) {
+            int growth = util > 0.95 ? 3 : 2;
+            newConn = std::min(curConn + growth, MAX_CONNS);
+            LOG_DEBUG("AI-Tuner: +" + std::to_string(growth) + " connections (" +
+                      std::to_string(newConn) + ") — parallelism bottleneck (util=" +
+                      std::to_string(static_cast<int>(util * 100)) + "% lat=" + std::to_string(lat) + "ms)");
+        } else if (util > 0.70 && trend > 3 && qps > 5 && curConn < MAX_CONNS) {
             newConn = std::min(curConn + 2, MAX_CONNS);
             LOG_DEBUG("AI-Tuner: +2 connections (" +
                       std::to_string(newConn) + ") — pre-emptive (util=" +
@@ -227,15 +235,15 @@ void AutoTuner::tune() {
     // Use P95 to detect tail latency (the Kalman avg may be smooth but tail is high)
     bool tailIssue = perf.p95LatencyMs > 120;
     if (bootPhase || err > 0.03 || tailIssue || lat > 300 || (variance > 50 && consecutiveHighLat_ >= 2)) {
-        if (!fanOut_.load()) {
-            fanOut_.store(true);
+        bool expected = false;
+        if (fanOut_.compare_exchange_weak(expected, true)) {
             LOG_DEBUG("AI-Tuner: enabling fan-out (err=" + std::to_string(err) +
                       " lat=" + std::to_string(lat) + " p95=" + std::to_string(perf.p95LatencyMs) +
                       " var=" + std::to_string(variance) + ")");
         }
     } else if (samplesCollected_ > 24 && err < 0.01 && perf.p95LatencyMs < 60 && variance < 20) {
-        if (fanOut_.load()) {
-            fanOut_.store(false);
+        bool expected = true;
+        if (fanOut_.compare_exchange_weak(expected, false)) {
             LOG_DEBUG("AI-Tuner: disabling fan-out — stable low load");
         }
     }
@@ -268,8 +276,19 @@ void AutoTuner::tune() {
 
     // Only use PID-based growth when not in turbo mode
     inTurbo = (turboCycles_ >= 2);
-    if (!inTurbo && !proxySaturated) {
-        if (load > 3 && lat > 100 && curThreads < MAX_THREADS) {
+    if (!inTurbo) {
+        // Preemptive: rising trend with moderate utilization — add thread before queue grows
+        if (util > 0.5 && trend > 3 && curThreads < MAX_THREADS) {
+            newThreads = std::min(curThreads + 1, MAX_THREADS);
+            LOG_DEBUG("AI-Tuner: +1 thread (" + std::to_string(newThreads) +
+                      ") — preemptive (util=" + std::to_string(static_cast<int>(util * 100)) +
+                      "% trend=" + std::to_string(trend) + ")");
+        } else if (util > 0.8 && lat > 200 && curThreads < MAX_THREADS) {
+            newThreads = std::min(curThreads + 2, MAX_THREADS);
+            LOG_DEBUG("AI-Tuner: +2 threads (" + std::to_string(newThreads) +
+                      ") — parallelism bottleneck (util=" + std::to_string(static_cast<int>(util * 100)) +
+                      "% lat=" + std::to_string(lat) + "ms)");
+        } else if (load > 3 && lat > 100 && curThreads < MAX_THREADS) {
             newThreads = std::min(curThreads + 2, MAX_THREADS);
             LOG_DEBUG("AI-Tuner: +2 threads (" + std::to_string(newThreads) + ") — busy+latent");
         } else if (load > 5 && curThreads < MAX_THREADS) {
@@ -280,12 +299,19 @@ void AutoTuner::tune() {
 
     // Only shrink when not in turbo
     if (!inTurbo) {
-        if (load == 0 && consecutiveLowLoad_ >= 6 && curThreads > 8) {
-            newThreads = curThreads - 1;
-            LOG_DEBUG("AI-Tuner: -1 thread (" + std::to_string(newThreads) + ") — idle");
-        } else if (load < 3 && consecutiveLowLoad_ >= 12 && curThreads > 8) {
-            newThreads = curThreads - 1;
-            LOG_DEBUG("AI-Tuner: -1 thread (" + std::to_string(newThreads) + ") — low load");
+        // Threads > connections × 1.2 → excess threads contend on connections
+        if (curThreads > curConn + curConn / 5 && curThreads > MIN_THREADS) {
+            newThreads = std::max(curConn + curConn / 5, MIN_THREADS);
+            LOG_DEBUG("AI-Tuner: -" + std::to_string(curThreads - newThreads) +
+                      " threads (" + std::to_string(newThreads) + ") — excess vs connections");
+        } else if (util < 0.7) {
+            if (load == 0 && consecutiveLowLoad_ >= 3 && curThreads > MIN_THREADS) {
+                newThreads = curThreads - 1;
+                LOG_DEBUG("AI-Tuner: -1 thread (" + std::to_string(newThreads) + ") — idle");
+            } else if (load < 3 && consecutiveLowLoad_ >= 12 && curThreads > MIN_THREADS) {
+                newThreads = curThreads - 1;
+                LOG_DEBUG("AI-Tuner: -1 thread (" + std::to_string(newThreads) + ") — low load");
+            }
         }
     }
 

@@ -23,6 +23,32 @@ h1{font-size:28px;font-weight:600;color:#1a73e8;margin-bottom:4px;}
 <p class='subtitle'>DNS-over-HTTPS proxy</p>
 
 <div class='version'>
+<h2>v0.7.0</h2>
+<p class='date'>2026-07-07</p>
+<ul>
+<li><b>Feature</b>: Persistent disk cache — serializes L2 cache to disk on shutdown, reloads on startup via <code>cache_file</code> config option. Eliminates cold-start latency penalty on restart.</li>
+<li><b>Feature</b>: Startup cache warmup — pre-resolves top 20 domains (A + AAAA) on init so first user queries hit cache immediately.</li>
+<li><b>Feature</b>: Thread/connection scaling like cache prewarm — preemptive growth when <code>util &gt; 0.5 &amp;&amp; trend &gt; 3</code> (rising load), parallelism bottleneck detection when <code>util &gt; 0.8 &amp;&amp; lat &gt; 200</code> (all workers busy on upstream). Threads no longer stuck at 10 when queue is empty.</li>
+<li><b>Feature</b>: Auto-flush of excess threads — when <code>threads &gt; connections &times; 1.2</code>, threads shrink to match. Prevents useless context-switching contention.</li>
+<li><b>Fix</b>: Preemptive cache refresh was dead code — <code>needsRefresh()</code> compared nanoseconds against seconds (unit mismatch), always returning false. Preemptive refresh now works correctly.</li>
+<li><b>Fix</b>: Cache TTL inflation on disk load — loaded entries now have TTLs clobbered to remaining time, matching eviction schedule.</li>
+<li><b>Fix</b>: Cache eviction — when L2 cache fills, evicts entry with shortest remaining TTL instead of refusing to cache new entries.</li>
+<li><b>Fix</b>: Proxy saturation detection — only triggers when connections are underutilized (&lt;70%), preventing false saturation death spiral on slow networks.</li>
+<li><b>Fix</b>: Fan-out toggle TOCTOU race — uses <code>compare_exchange_weak</code> instead of load-then-store.</li>
+<li><b>Fix</b>: Calendar time thread-safety — <code>localtime()</code> replaced with <code>localtime_r()</code> in monitor server.</li>
+<li><b>Fix</b>: Thread resize log showed post-resize count — captures <code>prevWorkers</code> before calling <code>resize()</code>.</li>
+<li><b>Fix</b>: L2 hit path null dereference — null <code>msg</code> guard added.</li>
+<li><b>Performance</b>: L2 cache 2,000 &rarr; 50,000 entries; L1 turbo 1,024 &rarr; 4,096 slots; <code>minTTL</code> 30s &rarr; 120s.</li>
+<li><b>Performance</b>: Baseline minimums raised <code>MIN_CONNS 6&rarr;16</code>, <code>MIN_THREADS 4&rarr;12</code>, initial pool 8&rarr;12 — ensures burst of 10-30 domains doesn't overwhelm.</li>
+<li><b>Performance</b>: <code>MAX_CONNS</code> 48&rarr;64 (higher ceiling for peak load).</li>
+<li><b>Performance</b>: Consecutive low-load threshold 6 &rarr; 3 (idle shrink starts 15s sooner).</li>
+<li><b>Performance</b>: Refresh loop uses <code>shared_lock</code> instead of <code>unique_lock</code> — no longer blocks concurrent L2 reads.</li>
+<li><b>GUI</b>: Dashboard THREADS card labels fixed — <code>PENDING</code> &rarr; <code>QUEUED</code>, <code>ALLOCATED</code> &rarr; <code>WORKERS</code> (pending tasks vs actual worker count).</li>
+<li><b>GUI</b>: Added <code>thread_pool.workers</code> (actual live thread count) to JSON/Prometheus API — WORKERS now shows actual count, not auto-tuner recommendation.</li>
+</ul>
+</div>
+
+<div class='version'>
 <h2>v0.6.2</h2>
 <p class='date'>2026-07-06</p>
 <ul>

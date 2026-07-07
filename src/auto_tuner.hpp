@@ -32,8 +32,8 @@ public:
 private:
     AutoTuner() = default;
 
-    std::atomic<int> connCount_{12};
-    std::atomic<int> threadCount_{8};
+    std::atomic<int> connCount_{16};
+    std::atomic<int> threadCount_{12};
     std::atomic<int> refreshPct_{10};
     std::atomic<bool> fanOut_{true};
 
@@ -64,9 +64,9 @@ private:
     int samplesCollected_ = 0;
 
     static constexpr size_t MAX_HISTORY = 150; // 5 min at 2s intervals
-    static constexpr int MIN_CONNS = 6;
-    static constexpr int MAX_CONNS = 48;
-    static constexpr int MIN_THREADS = 4;
+    static constexpr int MIN_CONNS = 16;
+    static constexpr int MAX_CONNS = 64;
+    static constexpr int MIN_THREADS = 12;
     static constexpr int MAX_THREADS = 48;
 
     // Turbo threader state

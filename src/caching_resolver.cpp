@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <thread>
 #include <vector>
+#include <fstream>
+#include <cstring>
 #include <immintrin.h>
 
 uint64_t CachingResolver::turboHash(const CacheKey& k) {
@@ -27,6 +29,7 @@ CachingResolver::~CachingResolver() {
     if (maintainThread_.joinable()) maintainThread_.join();
     if (refreshThread_.joinable()) refreshThread_.join();
     if (adaptivePrewarmThread_.joinable()) adaptivePrewarmThread_.join();
+    saveCache();
 }
 
 bool CachingResolver::turboLookup(uint64_t h, DnsMessagePtr& out) {
@@ -63,8 +66,127 @@ void CachingResolver::turboInsert(uint64_t h, DnsMessagePtr msg,
     turboFreq_[idx].store(0, std::memory_order_relaxed);
 }
 
+void CachingResolver::saveCache() {
+    if (cacheFile_.empty()) return;
+    std::ofstream out(cacheFile_, std::ios::binary);
+    if (!out) {
+        LOG_WARN("Cannot write cache file: " + cacheFile_);
+        return;
+    }
+    std::unique_lock lock(cacheMutex_);
+    uint32_t magic = CACHE_MAGIC;
+    uint32_t ver = CACHE_VERSION;
+    uint32_t count = 0;
+    // First pass: count non-expired entries
+    auto now = std::chrono::steady_clock::now();
+    auto sysNow = std::chrono::system_clock::now();
+    for (auto& [key, entry] : cache_) {
+        if (now < entry.expiresAt) count++;
+    }
+    out.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+    out.write(reinterpret_cast<const char*>(&ver), sizeof(ver));
+    out.write(reinterpret_cast<const char*>(&count), sizeof(count));
+    for (auto& [key, entry] : cache_) {
+        if (now >= entry.expiresAt) continue;
+        auto remaining = std::chrono::duration_cast<std::chrono::seconds>(entry.expiresAt - now).count();
+        if (remaining < 1) continue;
+        if (key.name.size() > 255 || !entry.msg) continue;
+        auto wire = entry.msg->pack();
+        if (wire.size() > 65535) continue;
+        uint8_t nameLen = static_cast<uint8_t>(key.name.size());
+        uint16_t type = key.type;
+        uint16_t qclass = key.qclass;
+        uint32_t ttl = static_cast<uint32_t>(remaining);
+        uint16_t wireLen = static_cast<uint16_t>(wire.size());
+        out.write(reinterpret_cast<const char*>(&nameLen), sizeof(nameLen));
+        out.write(key.name.data(), nameLen);
+        out.write(reinterpret_cast<const char*>(&type), sizeof(type));
+        out.write(reinterpret_cast<const char*>(&qclass), sizeof(qclass));
+        out.write(reinterpret_cast<const char*>(&ttl), sizeof(ttl));
+        out.write(reinterpret_cast<const char*>(&wireLen), sizeof(wireLen));
+        out.write(reinterpret_cast<const char*>(wire.data()), wire.size());
+    }
+    LOG_INFO("Cache saved: " + std::to_string(count) + " entries to " + cacheFile_);
+}
+
+void CachingResolver::loadCache() {
+    if (cacheFile_.empty()) return;
+    std::ifstream in(cacheFile_, std::ios::binary);
+    if (!in) {
+        LOG_WARN("Cannot read cache file: " + cacheFile_);
+        return;
+    }
+    uint32_t magic, ver, count;
+    in.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+    if (magic != CACHE_MAGIC) {
+        LOG_WARN("Invalid cache file magic");
+        return;
+    }
+    in.read(reinterpret_cast<char*>(&ver), sizeof(ver));
+    if (ver != CACHE_VERSION) {
+        LOG_WARN("Unsupported cache version: " + std::to_string(ver));
+        return;
+    }
+    in.read(reinterpret_cast<char*>(&count), sizeof(count));
+    if (count > 100000) {
+        LOG_WARN("Cache entry count too large: " + std::to_string(count));
+        return;
+    }
+    std::unique_lock lock(cacheMutex_);
+    auto now = std::chrono::steady_clock::now();
+    int loaded = 0;
+    for (uint32_t i = 0; i < count && in.good(); i++) {
+        uint8_t nameLen;
+        in.read(reinterpret_cast<char*>(&nameLen), sizeof(nameLen));
+        std::string name(nameLen, '\0');
+        in.read(&name[0], nameLen);
+        uint16_t type, qclass;
+        in.read(reinterpret_cast<char*>(&type), sizeof(type));
+        in.read(reinterpret_cast<char*>(&qclass), sizeof(qclass));
+        uint32_t ttl;
+        in.read(reinterpret_cast<char*>(&ttl), sizeof(ttl));
+        uint16_t wireLen;
+        in.read(reinterpret_cast<char*>(&wireLen), sizeof(wireLen));
+        if (!in.good() || wireLen < 12 || wireLen > 4096) continue;
+        std::vector<uint8_t> wire(wireLen);
+        in.read(reinterpret_cast<char*>(wire.data()), wireLen);
+        if (!in.good()) continue;
+        auto msg = DnsMessage::parse(wire.data(), wireLen);
+        if (!msg || !msg->hasQuestions()) continue;
+        CacheKey key{name, type, qclass};
+        auto remaining = std::chrono::seconds(ttl);
+        clobberTTL(*msg, remaining);
+        CacheEntry entry;
+        entry.msg = std::move(msg);
+        entry.ttl = remaining;
+        entry.expiresAt = now + remaining;
+        cache_[key] = std::move(entry);
+        loaded++;
+    }
+    LOG_INFO("Cache loaded: " + std::to_string(loaded) + " entries from " + cacheFile_);
+    in.close();
+}
+
+void CachingResolver::warmupCache() {
+    const char* topDomains[] = {
+        "google.com", "youtube.com", "facebook.com", "amazon.com", "wikipedia.org",
+        "twitter.com", "instagram.com", "reddit.com", "linkedin.com", "whatsapp.com",
+        "zoom.us", "netflix.com", "microsoft.com", "apple.com", "cloudflare.com",
+        "github.com", "stackoverflow.com", "yahoo.com", "bing.com", "pop-os.org"
+    };
+    int warmed = 0;
+    for (auto name : topDomains) {
+        auto q = DnsMessage::createQuery(name, DnsType::A);
+        if (q && back_->query(*q, false)) warmed++;
+        auto q4 = DnsMessage::createQuery(name, DnsType::AAAA);
+        if (q4 && back_->query(*q4, false)) warmed++;
+    }
+    LOG_INFO("Cache warmup: " + std::to_string(warmed) + " entries pre-populated");
+}
+
 void CachingResolver::init() {
     back_->init();
+    warmupCache();
 }
 
 void CachingResolver::reload() {
@@ -96,8 +218,8 @@ void CachingResolver::maintain() {
                 if (!running_) break;
                 std::vector<std::pair<CacheKey, DnsQuestion>> toRefresh;
                 {
-                    std::unique_lock lock(cacheMutex_);
-                    for (auto& [key, entry] : cache_) {
+                std::shared_lock lock(cacheMutex_);
+                for (auto& [key, entry] : cache_) {
                         if (running_ && needsRefresh(entry) &&
                             entry.ttl >= minTTL) {
                             toRefresh.emplace_back(key, DnsQuestion{key.name, key.type, key.qclass});
@@ -135,8 +257,9 @@ void CachingResolver::maintain() {
 bool CachingResolver::needsRefresh(const CacheEntry& entry) {
     if (isExpired(entry)) return false;
     int threshold = AutoTuner::instance().cacheRefreshThresholdPct();
-    auto remaining = entry.expiresAt - std::chrono::steady_clock::now();
-    auto total = entry.expiresAt - (entry.expiresAt - entry.ttl);
+    auto remaining = std::chrono::duration_cast<std::chrono::seconds>(
+        entry.expiresAt - std::chrono::steady_clock::now());
+    auto total = entry.ttl;
     if (total.count() <= 0) return false;
     auto remainingPct = remaining.count() * 100 / total.count();
     return remainingPct < threshold;
@@ -205,7 +328,7 @@ DnsMessagePtr CachingResolver::query(const DnsMessage& req, bool allowFanOut) {
     {
         std::shared_lock lock(cacheMutex_);
         auto it = cache_.find(key);
-        if (it != cache_.end() && !isExpired(it->second)) {
+        if (it != cache_.end() && !isExpired(it->second) && it->second.msg) {
             cacheHits_++;
             PerfMonitor::instance().recordCacheHit();
             turboInsert(h, it->second.msg, it->second.expiresAt);
@@ -231,14 +354,27 @@ DnsMessagePtr CachingResolver::query(const DnsMessage& req, bool allowFanOut) {
         auto expiresAt = std::chrono::steady_clock::now() + ttl;
         {
             std::unique_lock lock(cacheMutex_);
-            if (cache_.size() < maxCacheSize) {
-                CacheEntry entry;
-                entry.msg = reply->copy();
-                entry.ttl = ttl;
-                entry.expiresAt = expiresAt;
-                cache_[key] = std::move(entry);
-                cacheRecorded_++;
+            if (cache_.size() >= maxCacheSize) {
+                // Evict the entry with shortest remaining TTL
+                auto nowEvict = std::chrono::steady_clock::now();
+                auto evictIt = cache_.begin();
+                uint64_t minTTLval = UINT64_MAX;
+                for (auto it = cache_.begin(); it != cache_.end(); ++it) {
+                    auto rem = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        it->second.expiresAt - nowEvict).count();
+                    if (rem > 0 && static_cast<uint64_t>(rem) < minTTLval) {
+                        minTTLval = rem;
+                        evictIt = it;
+                    }
+                }
+                cache_.erase(evictIt);
             }
+            CacheEntry entry;
+            entry.msg = reply->copy();
+            entry.ttl = ttl;
+            entry.expiresAt = expiresAt;
+            cache_[key] = std::move(entry);
+            cacheRecorded_++;
         }
         turboInsert(h, reply->copy(), expiresAt);
         LOG_DEBUG("cache: recorded " + q.qname + " TTL " +

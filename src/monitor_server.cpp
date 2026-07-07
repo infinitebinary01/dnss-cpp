@@ -245,7 +245,8 @@ std::string MonitorServer::htmlEscape(const std::string& s) {
 
 static std::string timeStr() {
     auto t = system_clock::to_time_t(system_clock::now());
-    auto tm = *std::localtime(&t);
+    struct tm tmBuf;
+    auto tm = *localtime_r(&t, &tmBuf);
     std::ostringstream ss;
     ss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
     return ss.str();
@@ -288,7 +289,10 @@ std::string MonitorServer::renderPrometheus() {
         << "lynx_fan_out_enabled " << (tuner.fanOutEnabled() ? "1" : "0") << "\n\n"
         << "# HELP lynx_thread_pool_load Pending tasks in thread pool\n"
         << "# TYPE lynx_thread_pool_load gauge\n"
-        << "lynx_thread_pool_load " << perf.threadPoolLoad << "\n";
+        << "lynx_thread_pool_load " << perf.threadPoolLoad << "\n"
+        << "# HELP lynx_thread_pool_workers Actual worker threads\n"
+        << "# TYPE lynx_thread_pool_workers gauge\n"
+        << "lynx_thread_pool_workers " << perf.threadPoolWorkers << "\n";
     return out.str();
 }
 
@@ -318,6 +322,7 @@ std::string MonitorServer::renderJson() {
       << "},"
       << "\"thread_pool\":{"
         << "\"pending\":" << perf.threadPoolLoad << ","
+        << "\"workers\":" << perf.threadPoolWorkers << ","
         << "\"recommended\":" << tuner.recommendedThreads()
       << "},"
       << "\"auto_tuner\":{"
