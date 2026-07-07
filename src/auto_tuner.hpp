@@ -65,7 +65,7 @@ private:
 
     static constexpr size_t MAX_HISTORY = 150; // 5 min at 2s intervals
     static constexpr int MIN_CONNS = 6;
-    static constexpr int MAX_CONNS = 16;
+    static constexpr int MAX_CONNS = 48;
     static constexpr int MIN_THREADS = 4;
     static constexpr int MAX_THREADS = 48;
 

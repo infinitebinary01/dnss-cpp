@@ -23,6 +23,15 @@ h1{font-size:28px;font-weight:600;color:#1a73e8;margin-bottom:4px;}
 <p class='subtitle'>DNS-over-HTTPS proxy</p>
 
 <div class='version'>
+<h2>v0.6.2</h2>
+<p class='date'>2026-07-06</p>
+<ul>
+<li><b>Fix</b>: Threads outgrew connections 8:1 (48 threads, 6 connections) — threads blocked on <code>getNextConnection()</code> while pending queue grew unbounded. Turbo mode now grows connections (+4/cycle) alongside threads, matching <code>MAX_CONNS</code> to <code>MAX_THREADS</code> (both 48).</li>
+<li><b>Fix</b>: <code>inTurbo</code> variable redeclaration in thread section — caused shadowing, fixed by reusing connection section's declaration.</li>
+</ul>
+</div>
+
+<div class='version'>
 <h2>v0.6.1</h2>
 <p class='date'>2026-07-05</p>
 <ul>

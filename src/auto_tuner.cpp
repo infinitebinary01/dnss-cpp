@@ -161,26 +161,41 @@ void AutoTuner::tune() {
     if (lat < 50 && err < 0.01) consecutiveLowLoad_++;
     else consecutiveLowLoad_ = std::max(0, consecutiveLowLoad_ - 1);
 
-    // --- Connection count ---
+    // --- Connection count (turbo-aware) ---
     double util = perf.connUtilization;
     int curConn = connCount_.load();
     int newConn = curConn;
 
+    // Turbo connection growth: when pending queue is deep, add connections aggressively
+    int poolLoad = perf.threadPoolLoad;
+    bool inTurbo = (turboCycles_ >= 2);
+    if (inTurbo && poolLoad > 50) {
+        int growth = std::min(4, MAX_CONNS - curConn);
+        if (growth > 0) {
+            newConn = curConn + growth;
+            LOG_DEBUG("AI-Tuner: TURBO +" + std::to_string(growth) +
+                      " connections (" + std::to_string(newConn) +
+                      ") — load=" + std::to_string(poolLoad));
+        }
+    }
+
     // Proxy saturation detection: if latency is high AND connections are already
     // moderate, more connections will only congest the proxy further. Shrink instead.
     bool proxySaturated = (lat > 500 && curConn > MIN_CONNS) || (lat > 1000);
-    if (proxySaturated) {
-        newConn = std::max(curConn - 1, MIN_CONNS);
-        if (newConn != curConn)
-            LOG_DEBUG("AI-Tuner: -1 connection (" +
-                      std::to_string(newConn) + ") — proxy saturated");
-    } else if (consecutiveLowLoad_ >= 6 && curConn > MIN_CONNS) {
-        newConn = curConn - 1;
-        LOG_DEBUG("AI-Tuner: -1 connection (" + std::to_string(newConn) + ") — low load");
+    if (!inTurbo) {
+        if (proxySaturated) {
+            newConn = std::max(curConn - 1, MIN_CONNS);
+            if (newConn != curConn)
+                LOG_DEBUG("AI-Tuner: -1 connection (" +
+                          std::to_string(newConn) + ") — proxy saturated");
+        } else if (consecutiveLowLoad_ >= 6 && curConn > MIN_CONNS) {
+            newConn = curConn - 1;
+            LOG_DEBUG("AI-Tuner: -1 connection (" + std::to_string(newConn) + ") — low load");
+        }
     }
 
     // Only grow when proxy is NOT saturated and latency is acceptable
-    if (!proxySaturated) {
+    if (!inTurbo && !proxySaturated) {
         if (util > 0.70 && trend > 3 && qps > 5 && curConn < MAX_CONNS) {
             newConn = std::min(curConn + 2, MAX_CONNS);
             LOG_DEBUG("AI-Tuner: +2 connections (" +
@@ -252,7 +267,7 @@ void AutoTuner::tune() {
     }
 
     // Only use PID-based growth when not in turbo mode
-    bool inTurbo = (turboCycles_ >= 2);
+    inTurbo = (turboCycles_ >= 2);
     if (!inTurbo && !proxySaturated) {
         if (load > 3 && lat > 100 && curThreads < MAX_THREADS) {
             newThreads = std::min(curThreads + 2, MAX_THREADS);
