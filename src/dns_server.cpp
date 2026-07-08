@@ -19,7 +19,7 @@
 
 class ThreadPool {
 public:
-    ThreadPool(size_t n) : target_(n), liveCount_(n) {
+    ThreadPool(size_t n) : target_(n) {
         for (size_t i = 0; i < n; ++i)
             spawnWorker();
     }
@@ -283,6 +283,10 @@ void DnsServer::stop() {
 
 void DnsServer::listenAndServe() {
     try {
+    // Start the perf monitor loop early so the thread pool is managed
+    // and workers are visible in telemetry, even during warmupCache().
+    perfMonitorThread_ = std::thread([this]() { perfMonitorLoop(); });
+
     resolver_->init();
 
     auto colon = addr_.find(':');
@@ -344,8 +348,6 @@ void DnsServer::listenAndServe() {
     } else {
         tcpAcceptThread_ = std::thread([this]() { tcpAcceptLoop(); });
     }
-
-    perfMonitorThread_ = std::thread([this]() { perfMonitorLoop(); });
 
     // Main thread runs io_ctx for TCP accept
     ioCtx_.run();

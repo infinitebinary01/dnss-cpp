@@ -3,6 +3,7 @@
 #include "monitor_server.hpp"
 #include "perf_monitor.hpp"
 #include "auto_tuner.hpp"
+#include "latency_manager.hpp"
 #include "caching_resolver.hpp"
 #include "logger.hpp"
 
@@ -324,6 +325,13 @@ std::string MonitorServer::renderJson() {
         << "\"pending\":" << perf.threadPoolLoad << ","
         << "\"workers\":" << perf.threadPoolWorkers << ","
         << "\"recommended\":" << tuner.recommendedThreads()
+      << "},"
+      << "\"latency_manager\":{"
+        << "\"target_avg_ms\":" << LatencyManager::instance().targetAvgMs() << ","
+        << "\"target_p95_ms\":" << LatencyManager::instance().targetP95Ms() << ","
+        << "\"urgency\":" << LatencyManager::instance().urgencyLevel() << ","
+        << "\"gap_pct\":" << LatencyManager::instance().gapPct() << ","
+        << "\"bottleneck\":\"" << LatencyManager::instance().bottleneck() << "\""
       << "},"
       << "\"auto_tuner\":{"
         << "\"cache_refresh_pct\":" << tuner.cacheRefreshThresholdPct() << ","

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
 #include "auto_tuner.hpp"
+#include "latency_manager.hpp"
 #include "logger.hpp"
 #include <thread>
 #include <algorithm>
@@ -94,6 +95,10 @@ double AutoTuner::computeQps() {
 void AutoTuner::tune() {
     auto perf = PerfMonitor::instance().snapshot();
     auto now = std::chrono::steady_clock::now();
+
+    // LatencyManager evaluates gap to targets and computes urgency
+    LatencyManager::instance().evaluate(perf);
+    int latUrgency = LatencyManager::instance().urgencyLevel();
 
     double rawLat = perf.avgLatencyMs;
     double err = perf.errorRate;
@@ -227,21 +232,34 @@ void AutoTuner::tune() {
         }
     }
 
+    // LatencyManager boost: urgency-driven connection growth
+    if (latUrgency > 0 && !proxySaturated && newConn < MAX_CONNS) {
+        int lmBoost = LatencyManager::instance().connBoost();
+        int boosted = std::min(newConn + lmBoost, MAX_CONNS);
+        if (boosted > newConn) {
+            LOG_DEBUG("AI-Tuner: LM +" + std::to_string(boosted - newConn) +
+                      " connections (" + std::to_string(boosted) + ") — urgency=" +
+                      std::to_string(latUrgency));
+            newConn = boosted;
+        }
+    }
     connCount_.store(newConn);
 
     // --- Fan-out ---
     // Keep fan-out on during boot phase (first 60s) to prevent premature disable
     bool bootPhase = samplesCollected_ < 12;
+    // LatencyManager keeps fan-out on when urgency is high
+    bool lmForceFan = LatencyManager::instance().forceFanOut();
     // Use P95 to detect tail latency (the Kalman avg may be smooth but tail is high)
     bool tailIssue = perf.p95LatencyMs > 120;
-    if (bootPhase || err > 0.03 || tailIssue || lat > 300 || (variance > 50 && consecutiveHighLat_ >= 2)) {
+    if (bootPhase || lmForceFan || err > 0.03 || tailIssue || lat > 300 || (variance > 50 && consecutiveHighLat_ >= 2)) {
         bool expected = false;
         if (fanOut_.compare_exchange_weak(expected, true)) {
             LOG_DEBUG("AI-Tuner: enabling fan-out (err=" + std::to_string(err) +
                       " lat=" + std::to_string(lat) + " p95=" + std::to_string(perf.p95LatencyMs) +
                       " var=" + std::to_string(variance) + ")");
         }
-    } else if (samplesCollected_ > 24 && err < 0.01 && perf.p95LatencyMs < 60 && variance < 20) {
+    } else if (!lmForceFan && samplesCollected_ > 24 && err < 0.01 && perf.p95LatencyMs < 60 && variance < 20) {
         bool expected = true;
         if (fanOut_.compare_exchange_weak(expected, false)) {
             LOG_DEBUG("AI-Tuner: disabling fan-out — stable low load");
@@ -315,6 +333,18 @@ void AutoTuner::tune() {
         }
     }
 
+    // LatencyManager boost: urgency-driven thread growth
+    if (latUrgency > 0 && !inTurbo && newThreads < MAX_THREADS) {
+        int lmBoost = LatencyManager::instance().threadBoost();
+        int boosted = std::min(newThreads + lmBoost, MAX_THREADS);
+        if (boosted > newThreads) {
+            LOG_DEBUG("AI-Tuner: LM +" + std::to_string(boosted - newThreads) +
+                      " threads (" + std::to_string(boosted) + ") — urgency=" +
+                      std::to_string(latUrgency));
+            newThreads = boosted;
+        }
+    }
+
     // Clamp to valid range
     if (newThreads < MIN_THREADS) newThreads = MIN_THREADS;
     if (newThreads > MAX_THREADS) newThreads = MAX_THREADS;
@@ -324,6 +354,12 @@ void AutoTuner::tune() {
     // Boot phase: if hit rate is low, be aggressive about refresh
     if (samplesCollected_ < 12) {
         refreshPct_.store(15);
+    } else if (latUrgency > 0 && curRefresh < 50) {
+        int lmRefresh = LatencyManager::instance().cacheRefreshBoost();
+        int boosted = std::min(curRefresh + lmRefresh, 50);
+        refreshPct_.store(boosted);
+        LOG_DEBUG("AI-Tuner: cache refresh " + std::to_string(boosted) + "% (urgency=" +
+                  std::to_string(latUrgency) + ")");
     } else if (hitRate < 0.3 && curRefresh < 30) {
         refreshPct_.store(std::min(curRefresh + 5, 30));
         LOG_DEBUG("AI-Tuner: cache refresh " + std::to_string(refreshPct_.load()) + "% (low hit rate)");
@@ -346,5 +382,8 @@ void AutoTuner::tune() {
              " err=" + std::to_string(err) +
              " hit=" + std::to_string(hitRate) +
              " pid=" + std::to_string(pidOutput) +
-             " load=" + std::to_string(load));
+             " load=" + std::to_string(load) +
+             " urgen=" + std::to_string(latUrgency) +
+             " gap=" + std::to_string(static_cast<int>(LatencyManager::instance().gapPct())) +
+             "% bot=" + LatencyManager::instance().bottleneck());
 }

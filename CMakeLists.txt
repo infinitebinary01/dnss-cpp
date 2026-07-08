@@ -28,6 +28,7 @@ set(SOURCES
     src/auto_tuner.cpp
     src/monitor_server.cpp
     src/connection_controller.cpp
+    src/latency_manager.cpp
 )
 
 set(HEADERS
@@ -43,6 +44,7 @@ set(HEADERS
     src/auto_tuner.hpp
     src/monitor_server.hpp
     src/connection_controller.hpp
+    src/latency_manager.hpp
 )
 
 add_executable(lynx ${SOURCES} ${HEADERS})

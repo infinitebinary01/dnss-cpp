@@ -177,9 +177,9 @@ void CachingResolver::warmupCache() {
     int warmed = 0;
     for (auto name : topDomains) {
         auto q = DnsMessage::createQuery(name, DnsType::A);
-        if (q && back_->query(*q, false)) warmed++;
+        if (q && this->query(*q, false)) warmed++;
         auto q4 = DnsMessage::createQuery(name, DnsType::AAAA);
-        if (q4 && back_->query(*q4, false)) warmed++;
+        if (q4 && this->query(*q4, false)) warmed++;
     }
     LOG_INFO("Cache warmup: " + std::to_string(warmed) + " entries pre-populated");
 }
