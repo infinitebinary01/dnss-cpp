@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset='utf-8'>
+<title>Lynx DoH — Changelog</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'JetBrains Mono','Cascadia Code','Fira Code',monospace;background:#1e1e2e;color:#cdd6f4;padding:30px;max-width:900px;margin:0 auto;}
+a{color:#89b4fa;text-decoration:none}
+a:hover{text-shadow:0 0 8px rgba(137,180,250,.4)}
+h1{font-size:28px;font-weight:600;color:#a6e3a1;margin-bottom:4px;text-shadow:0 0 10px rgba(166,227,161,.25)}
+.subtitle{color:#6c7086;font-size:13px;margin-bottom:28px}
+.version{background:rgba(36,36,52,.92);border:1px solid #313244;border-radius:10px;padding:20px 24px;margin-bottom:16px;position:relative;overflow:hidden}
+.version::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,#89b4fa,transparent)}
+.version h2{font-size:16px;font-weight:700;color:#89b4fa;margin-bottom:4px}
+.version .date{font-size:12px;color:#585b70;margin-bottom:12px}
+.version ul{margin:0;padding-left:20px}
+.version li{font-size:13px;color:#cdd6f4;line-height:1.7}
+.version li b{color:#a6e3a1}
+.version li code{background:#313244;padding:1px 5px;border-radius:3px;font-size:12px;color:#fab387}
+.footer{margin-top:32px;padding-top:16px;border-top:1px solid #313244;font-size:13px;color:#585b70;display:flex;gap:16px}
+.ver{color:#585b70;font-size:11px;margin-left:8px}
+</style>
+</head>
+<body>
+<h1>Lynx Changelog</h1>
+<p class='subtitle'>DNS-over-HTTPS proxy — C++ port of dnss</p>
+
+<div class='version'>
+<h2>v0.7.1 <span class='ver'>2026-07-08</span></h2>
+<ul>
+<li><b>Added</b>: LatencyManager — urgency-driven scaling (0-5) with bottleneck detection</li>
+<li><b>Added</b>: <code>latency_manager</code> object in <code>/api/stats</code> JSON (urgency, gap%, bottleneck, targets)</li>
+<li><b>Added</b>: LM feeds <code>threadBoost/connBoost/cacheRefreshBoost</code> into the auto-tuner</li>
+<li><b>Added</b>: LM forces fan-out on and boosts cache refresh when urgency &gt; 0</li>
+<li><b>Fixed</b>: <code>warmupCache()</code> called <code>back_-&gt;query()</code> bypassing CachingResolver — <b>warmup never populated the HTTP cache</b> since v0.7.0. Changed to <code>this-&gt;query()</code>.</li>
+<li><b>Fixed</b>: <code>ThreadPool</code> initialized <code>liveCount_</code> to <code>n</code> then spawned <code>n</code> workers, each adding 1 — counting to <code>2n</code>. All workers immediately exited via the shrink loop because <code>liveCount_ &gt; target_</code>. The pool was permanently understaffed (showed <code>workers: 0</code> in telemetry).</li>
+<li><b>Fixed</b>: <code>perfMonitorLoop</code> thread started after <code>warmupCache()</code> — warmup blocks for ~80s doing 40 sequential HTTP requests. Moved thread start to before <code>resolver_-&gt;init()</code> so thread pool stats are recorded immediately.</li>
+</ul>
+</div>
+
+<div class='version'>
+<h2>v0.7.0 <span class='ver'>2026-07-08</span></h2>
+<ul>
+<li><b>Added</b>: Persistent disk cache — binary serialization of L2 cache to configurable <code>cache_file</code>, save on destructor, load on startup</li>
+<li><b>Added</b>: Startup warmup — pre-resolves top 20 domains (A+AAAA) via <code>warmupCache()</code> in <code>CachingResolver::init()</code></li>
+<li><b>Added</b>: Thread growth for high utilization + latency (<code>util &gt; 0.8 &amp;&amp; lat &gt; 200</code>) — catches parallelism bottlenecks, not just queue depth</li>
+<li><b>Added</b>: Preemptive thread scaling (<code>util &gt; 0.5 &amp;&amp; trend &gt; 3</code>) — analogous to cache prewarm</li>
+<li><b>Added</b>: Auto-flush excess threads: when <code>threads &gt; connections &times; 1.2</code>, shrink threads to match</li>
+<li><b>Fixed</b>: Cache LRU eviction — instead of refusing to cache when full, evicts the entry with shortest remaining TTL</li>
+<li><b>Fixed</b>: <code>needsRefresh()</code> unit mismatch (nanoseconds vs seconds) — preemptive refresh was dead code</li>
+<li><b>Fixed</b>: TTL inflation on disk cache load — <code>clobberTTL()</code> zeros remaining TTL into loaded messages</li>
+<li><b>Fixed</b>: Fan-out TOCTOU race — uses <code>compare_exchange_weak</code> instead of load+store</li>
+<li><b>Fixed</b>: Proxy saturation only triggers when connections are underutilized (&lt;70%)</li>
+<li><b>Fixed</b>: GUI labels: THREADS &rarr; THREAD POOL, PENDING &rarr; QUEUED, ALLOCATED &rarr; WORKERS</li>
+<li><b>Fixed</b>: Added actual <code>thread_pool.workers</code> to JSON/Prometheus API (separate from recommended)</li>
+<li><b>Changed</b>: Cache sizes increased — L2 2000&rarr;50000, L1 1024&rarr;4096, minTTL 30s&rarr;120s</li>
+<li><b>Changed</b>: Baselines — MIN_CONNS 6&rarr;16, MIN_THREADS 4&rarr;12, MAX_CONNS 48&rarr;64, pool start 8&rarr;12</li>
+<li><b>Changed</b>: Consecutive low load threshold 6&rarr;3 for faster idle shrink</li>
+</ul>
+</div>
+
+<div class='version'>
+<h2>v0.6.2 <span class='ver'>2026-07-04</span></h2>
+<ul>
+<li><b>Fixed</b>: Balance threads-to-connections ratio under turbo load — prevent over-threading when connection pool is saturated</li>
+</ul>
+</div>
+
+<div class='version'>
+<h2>v0.6.1 <span class='ver'>2026-07-04</span></h2>
+<ul>
+<li><b>Fixed</b>: Error rate inflation from duplicate watchdog race condition</li>
+</ul>
+</div>
+
+<div class='version'>
+<h2>v0.6.0 <span class='ver'>2026-07-04</span></h2>
+<ul>
+<li><b>Added</b>: Turbo threader — aggressive thread scaling (+8/cycle, 16&rarr;64 max) when pending queue exceeds 50; capped decay prevents PID lockout</li>
+<li><b>Added</b>: Backpressure — <code>tryEnqueue()</code> rejects at queue &ge; 2000, returns SERVFAIL</li>
+<li><b>Fixed</b>: <code>resize()</code> used <code>workers_.size()</code> (never shrinks) instead of <code>liveCount_</code> — pool permanently understaffed after shrink</li>
+<li><b>Fixed</b>: <code>workerLoop()</code> double-decremented <code>liveCount_</code> on shrink exit</li>
+<li><b>Fixed</b>: <code>async_send_to</code> buffer use-after-free in <code>onUdpReceive</code> rejection path</li>
+<li><b>Fixed</b>: Uncaught <code>DnsMessage::parse()</code> exception in <code>onUdpReceive</code></li>
+<li><b>Changed</b>: MAX_WORKERS 32&rarr;64, restart window 2s&rarr;0.5s</li>
+</ul>
+</div>
+
+<div class='version'>
+<h2>v0.5.0 <span class='ver'>2026-07-03</span></h2>
+<ul>
+<li><b>Added</b>: Pre-built HTTP headers, in-place response parsing (<code>string_view</code>)</li>
+<li><b>Added</b>: Single reconnect worker thread (replaces thread-per-failure)</li>
+<li><b>Added</b>: Sharded rate limiter (16 FNV-1a buckets), <code>CacheEntry</code> dedup</li>
+<li><b>Added</b>: <code>_mm_pause()</code> in spinloops, <code>thread_local</code> query counter</li>
+<li><b>Added</b>: <code>nameToWire/wireToName</code> optimizations, <code>alignas(64)</code> LatencyRing</li>
+<li><b>Fixed</b>: <code>raceUpstreams</code> captures wire by value (use-after-free) — <b>CRITICAL</b></li>
+<li><b>Fixed</b>: Missing <code>memcpy</code> in <code>exchange/healthCheck</code> response reassembly — <b>CRITICAL</b></li>
+<li><b>Fixed</b>: <code>getNextConnection</code> data race on <code>pool.connections</code> vector — <b>CRITICAL</b></li>
+<li><b>Fixed</b>: Socket closed before connected flag cleared</li>
+<li><b>Fixed</b>: <code>reload()</code> modifies proxy config without synchronization</li>
+<li><b>Fixed</b>: <code>connCtrl_.manage()</code> only on successful connection open</li>
+<li><b>Fixed</b>: Socket re-opened after proxy failure in <code>openFunc</code> fallback path</li>
+<li><b>Fixed</b>: Sanitized private proxy IP in scripts</li>
+</ul>
+</div>
+
+<div class='version'>
+<h2>v0.4.0 <span class='ver'>2026-06-30</span></h2>
+<ul>
+<li><b>Fixed</b>: Heap-use-after-free in <code>CachingResolver</code> refresh thread — collect keys before unlock to avoid iterator invalidation by <code>gcCache</code></li>
+<li><b>Fixed</b>: Heap-use-after-free in <code>MonitorServer</code> — <code>enable_shared_from_this</code> for detached SSE handler threads</li>
+<li><b>Fixed</b>: DNS server UDP kicker — unique ephemeral ports for SO_REUSEPORT</li>
+<li><b>Fixed</b>: DNS resolution loop when lynx is the system DNS — hardcoded IPs first, system DNS fallback</li>
+<li><b>Fixed</b>: Dashboard SSE errors — removed broken health check path</li>
+<li><b>Added</b>: Hardcoded IP fallback for well-known DoH providers (dns.google, cloudflare-dns.com, dns.quad9.net)</li>
+<li><b>Added</b>: lynx-watchdog.sh — auto-detect WORK/HOME network, update proxy env</li>
+<li><b>Added</b>: lynx-loop.sh — persistent supervisor, restarts lynx on crash</li>
+<li><b>Added</b>: start.sh — unified launcher (start/stop/restart/status/logs)</li>
+<li><b>Added</b>: <code>www/</code> — modern dashboard with uPlot charts and SSE real-time stats</li>
+<li><b>Changed</b>: Recovery architecture — lynx-loop sole restarter, watchdog monitor-only</li>
+</ul>
+</div>
+
+<div class='version'>
+<h2>v0.3.0 <span class='ver'>2026-06-27</span></h2>
+<ul>
+<li><b>Added</b>: Multi-upstream racing — secondary DoH server via <code>--https_upstream2</code></li>
+<li><b>Added</b>: Per-upstream health tracking — error ratio monitoring, pool shrink/grow</li>
+<li><b>Added</b>: TCP keepalive (KEEPIDLE=10s, KEEPINTVL=3s, KEEPCNT=3) on all DoH connections</li>
+<li><b>Added</b>: <code>scripts/setup-system-dns.sh</code> — grants <code>cap_net_bind_service</code>, detects DNS manager, backup/restore support</li>
+<li><b>Fixed</b>: Dead UDP socket — main socket async receive was never started</li>
+<li><b>Fixed</b>: Socket timeout 200ms &rarr; 5000ms for slow proxy environments</li>
+<li><b>Fixed</b>: Cache-miss fan-out re-enabled, auto-tuner controls globally</li>
+<li><b>Changed</b>: Connection pool moved to <code>deque&lt;UpstreamPool&gt;</code> for per-upstream independent pools with health counters</li>
+</ul>
+</div>
+
+<div class='version'>
+<h2>v0.2.2 <span class='ver'>2026-06-26</span></h2>
+<ul>
+<li><b>Changed</b>: Capacity increases for high-throughput workloads — pre-allocate connection vector capacity to prevent data race on reallocation</li>
+</ul>
+</div>
+
+<div class='version'>
+<h2>v0.2.1 <span class='ver'>2026-06-26</span></h2>
+<ul>
+<li><b>Added</b>: Dashboard logo, config file support, branding cleanup</li>
+<li><b>Changed</b>: GUI fonts for readability — lighter body text, lighter label backgrounds</li>
+</ul>
+</div>
+
+<div class='version'>
+<h2>v0.2.0 <span class='ver'>2026-06-25</span></h2>
+<ul>
+<li><b>Fixed</b>: Proxy path in <code>Connection::open()</code> — missing <code>return true</code> after successful proxy TLS handshake. Execution always fell through to the direct connection block, overwriting the proxy tunnel. <b>The daemon had never actually used the proxy</b> since the fallback was added.</li>
+<li><b>Fixed</b>: Prewarm bypassing the cache — <code>prewarmCache()</code> called <code>resolver-&gt;query()</code> directly on the HTTP resolver, bypassing <code>CachingResolver</code>. Moved to <code>main.cpp</code> and runs through the caching layer.</li>
+<li><b>Fixed</b>: <code>healthCheck()</code> double-decrement bug — removed all <code>mc.connected-&gt;store(false)</code> calls from health check.</li>
+<li><b>Changed</b>: Auto-tuner grows connections based on pool utilization (&gt;85% + QPS &gt; 5 adds 1–2 connections immediately). Lowered growth thresholds (300&rarr;200ms, 10&rarr;5 trend, 0.03&rarr;0.02 error rate).</li>
+<li><b>Changed</b>: Removed redundant "Resource Usage" section from dashboard GUI.</li>
+</ul>
+</div>
+
+<div class='version'>
+<h2>v0.1.1 <span class='ver'>2026-06-20</span></h2>
+<ul>
+<li><b>Fixed</b>: Negative active connection count in stats dashboard — <code>Connection::exchange()</code> no longer sets <code>connected = false</code> on errors; all three unconditional <code>connectedCount_</code> decrements now use <code>exchange(false)</code> and only decrement when the old value was <code>true</code>.</li>
+</ul>
+</div>
+
+<div class='version'>
+<h2>v0.1.0 <span class='ver'>2026-06-20</span></h2>
+<ul>
+<li>Initial release</li>
+<li>DNS-over-HTTPS proxy with dual-tier caching (lock-free L1 turbo + LRU L2)</li>
+<li>Adaptive fan-out with Kalman-filtered PID auto-tuner</li>
+<li>Connection pooling with health checking and pre-warming</li>
+<li>Real-time monitoring dashboard and Prometheus metrics</li>
+</ul>
+</div>
+
+<div class='footer'>
+<a href='/'>Dashboard</a>
+<a href='https://github.com/infinitebinary01/dnss-cpp'>GitHub</a>
+<a href='https://github.com/infinitebinary01/dnss-cpp/issues'>Issues</a>
+</div>
+</body>
+</html>
