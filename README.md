@@ -9,6 +9,7 @@ A high-performance DNS-over-HTTPS (DoH) daemon
 - **Dual-tier caching** — lock-free L1 turbo cache for hot domains + LRU L2 cache with preemptive refresh
 - **Connection pool** — maintains persistent HTTPS connections with health-checking and auto-scaling
 - **Auto-tuner** — Kalman-filtered PID controller that adapts connection count, thread pool, and cache refresh rates in real-time
+- **Latency manager** — urgency-driven control (0-5) with bottleneck detection that feeds thread/connection/cache boosts into the auto-tuner; keeps P95 within target
 - **Monitoring dashboard** — built-in HTTP server with real-time latency/P95/hit-rate gauges
 - **Prometheus metrics** — `/metrics` endpoint for integration with monitoring stacks
 - **Pre-warming** — caches popular domains on startup for instant responsiveness
@@ -81,6 +82,10 @@ Open `http://localhost:8080` in a browser for the real-time dashboard:
 
 JSON API: `http://localhost:8080/api/stats`
 Prometheus: `http://localhost:8080/metrics`
+
+## Changelog
+
+See [CHANGELOG.html](changelog.html) for the full version history.
 
 ## License
 
