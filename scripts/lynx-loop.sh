@@ -28,6 +28,9 @@ ensure_watchdog
 
 while true; do
     log "starting lynx..."
+    # Source cached proxy env so lynx gets the right proxy immediately
+    # (watchdog writes ~/.proxy-env based on network detection)
+    [ -f "$HOME/.proxy-env" ] && . "$HOME/.proxy-env"
     "$BIN" --config="$CFG" --log_level=info >> "$LOG" 2>&1 < /dev/null
     RC=$?
     log "lynx exited with code $RC, restarting in 2s..."

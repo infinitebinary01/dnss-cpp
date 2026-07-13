@@ -186,7 +186,9 @@ void CachingResolver::warmupCache() {
 
 void CachingResolver::init() {
     back_->init();
-    warmupCache();
+    // Warmup runs async so the DNS server starts immediately.
+    // On hotspot this can take 80+s; don't block startup for it.
+    std::thread([this]() { warmupCache(); }).detach();
 }
 
 void CachingResolver::reload() {
