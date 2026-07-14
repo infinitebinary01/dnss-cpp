@@ -123,7 +123,7 @@
     var er = d.errors.rate || 0;
     var hr = d.cache.hit_rate || 0;
     var thr = d.cache.turbo_hit_rate || 0;
-    var l2r = Math.max(0, hr - thr);
+    var l2r = Math.max(0, hr * (1 - thr));
     var active = d.connections.active || 0;
     var total = d.connections.recommended || 1;
     var util = d.connections.utilization || 0;

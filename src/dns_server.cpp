@@ -206,7 +206,6 @@ void DnsServer::tcpAcceptLoop() {
                 auto reply = r->query(*msg);
                 if (!reply) {
                     reply = DnsMessage::createError(*msg, DnsRcode::ServFail);
-                    if (reply) PerfMonitor::instance().recordError();
                 }
                 auto wire = reply->pack();
                 uint16_t resp_len = htons(wire.size());
@@ -562,7 +561,6 @@ void DnsServer::handleQuery(const uint8_t* data, size_t len,
 
         if (!reply) {
             reply = DnsMessage::createError(*req, DnsRcode::ServFail);
-            if (reply) PerfMonitor::instance().recordError();
         }
 
         auto wire = reply->pack();
