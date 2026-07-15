@@ -130,7 +130,7 @@ private:
     std::atomic<size_t> liveCount_{0};
     static constexpr size_t MIN_WORKERS = 4;
     static constexpr size_t MAX_WORKERS = 64;
-    static constexpr size_t BACKPRESSURE_LIMIT = 2000;
+    static constexpr size_t BACKPRESSURE_LIMIT = 300;
 };
 
 static ThreadPool& dnsPool() {

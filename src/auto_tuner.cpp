@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
 #include "auto_tuner.hpp"
+#include "caching_resolver.hpp"
 #include "latency_manager.hpp"
 #include "logger.hpp"
 #include <thread>
@@ -356,15 +357,73 @@ void AutoTuner::tune() {
         refreshPct_.store(15);
     } else if (latUrgency > 0 && curRefresh < 50) {
         int lmRefresh = LatencyManager::instance().cacheRefreshBoost();
-        int boosted = std::min(curRefresh + lmRefresh, 50);
+        int boosted = std::min(curRefresh + lmRefresh, 10);
         refreshPct_.store(boosted);
         LOG_DEBUG("AI-Tuner: cache refresh " + std::to_string(boosted) + "% (urgency=" +
                   std::to_string(latUrgency) + ")");
     } else if (hitRate < 0.3 && curRefresh < 30) {
-        refreshPct_.store(std::min(curRefresh + 5, 30));
+        refreshPct_.store(std::min(curRefresh + 5, 10));
         LOG_DEBUG("AI-Tuner: cache refresh " + std::to_string(refreshPct_.load()) + "% (low hit rate)");
     } else if (hitRate > 0.8 && curRefresh > 5) {
         refreshPct_.store(std::max(curRefresh - 2, 5));
+    }
+
+    // --- Cache TTL tuning ---
+    if (samplesCollected_ > 12) {
+        int curMin = CachingResolver::getMinTTL();
+        int curNeg = CachingResolver::getNegativeTTL();
+
+        // High latency + moderate hit rate → upstream is slow, cache more aggressively
+        if (lat > 80 && hitRate < 0.92 && curMin < 900) {
+            CachingResolver::setMinTTL(curMin + 60);
+            CachingResolver::setNegativeTTL(std::min(curNeg + 60, 600));
+            LOG_DEBUG("AI-Tuner: +60s TTLs (lat=" + std::to_string(lat) +
+                      " hit=" + std::to_string(hitRate) + ")");
+        }
+
+        // Low latency + high hit rate → upstream is fast, relax TTLs
+        if (lat < 40 && hitRate > 0.95 && curMin > 300) {
+            CachingResolver::setMinTTL(curMin - 60);
+            LOG_DEBUG("AI-Tuner: -60s minTTL (lat=" + std::to_string(lat) +
+                      " hit=" + std::to_string(hitRate) + ")");
+        }
+    }
+
+    // --- Anomaly detection: pending queue stuck ---
+    if (load > 200 && consecutiveHighLat_ >= 3) {
+        int curThreads = threadCount_.load();
+        int newT = std::max(curThreads - 2, MIN_THREADS);
+        threadCount_.store(newT);
+        int curC = connCount_.load();
+        connCount_.store(std::max(curC - 2, MIN_CONNS));
+        LOG_WARN("AI-Tuner: ANOMALY — queue=" + std::to_string(load) +
+                 " cutting threads=" + std::to_string(newT) +
+                 " conns=" + std::to_string(connCount_.load()));
+        // Force cache more aggressively when queue is stuck
+        int curMin = CachingResolver::getMinTTL();
+        CachingResolver::setMinTTL(std::min(curMin + 120, 1200));
+        CachingResolver::setNegativeTTL(std::min(
+            CachingResolver::getNegativeTTL() + 120, 600));
+        consecutiveHighLat_ = 0;
+    }
+
+    // --- Anomaly detection: error spike ---
+    if (err > 0.03 && consecutiveHighErr_ >= 2) {
+        int curC = connCount_.load();
+        connCount_.store(std::max(curC - 1, MIN_CONNS));
+        LOG_WARN("AI-Tuner: ANOMALY — error spike " + std::to_string(err) +
+                 " cutting connections");
+        consecutiveHighErr_ = 0;
+    }
+
+    // --- Anomaly detection: hit rate collapse ---
+    if (hitRate < 0.5 && samplesCollected_ > 60) {
+        CachingResolver::setMinTTL(std::min(
+            CachingResolver::getMinTTL() + 300, 1800));
+        CachingResolver::setNegativeTTL(std::min(
+            CachingResolver::getNegativeTTL() + 120, 900));
+        LOG_WARN("AI-Tuner: ANOMALY — hit rate collapse to " +
+                 std::to_string(hitRate) + " increasing TTLs");
     }
 
     prevLatency_ = lat;
@@ -375,6 +434,8 @@ void AutoTuner::tune() {
     LOG_INFO("AI-Tuner: conns=" + std::to_string(connCount_.load()) +
              " threads=" + std::to_string(threadCount_.load()) +
              " refresh=" + std::to_string(refreshPct_.load()) + "%" +
+             " minTTL=" + std::to_string(CachingResolver::getMinTTL()) + "s" +
+             " negTTL=" + std::to_string(CachingResolver::getNegativeTTL()) + "s" +
              " fanout=" + (fanOut_.load() ? "on" : "off") +
              " lat=" + std::to_string(lat) + "ms" +
              " trend=" + std::to_string(trend) +

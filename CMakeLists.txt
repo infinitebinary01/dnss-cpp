@@ -76,8 +76,10 @@ if(HAS_SSE42)
     message(STATUS "SSE4.2 SIMD enabled")
 endif()
 
-# LTO / optimization
-target_compile_options(lynx PRIVATE -O1 -fsanitize=address -fno-omit-frame-pointer -g)
-target_link_options(lynx PRIVATE -fsanitize=address)
+# ASAN for debug builds (not release)
+if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")
+    target_compile_options(lynx PRIVATE -O1 -fsanitize=address -fno-omit-frame-pointer -g)
+    target_link_options(lynx PRIVATE -fsanitize=address)
+endif()
 
 install(TARGETS lynx RUNTIME DESTINATION bin)

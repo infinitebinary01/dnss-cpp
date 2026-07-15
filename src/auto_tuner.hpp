@@ -65,9 +65,9 @@ private:
 
     static constexpr size_t MAX_HISTORY = 150; // 5 min at 2s intervals
     static constexpr int MIN_CONNS = 16;
-    static constexpr int MAX_CONNS = 64;
+    static constexpr int MAX_CONNS = 32;
     static constexpr int MIN_THREADS = 12;
-    static constexpr int MAX_THREADS = 48;
+    static constexpr int MAX_THREADS = 24;
 
     // Turbo threader state
     int turboCycles_ = 0;

@@ -340,7 +340,9 @@ std::string MonitorServer::renderJson() {
         << "\"qps\":" << tuner.currentQps() << ","
         << "\"connection_growth\":0,"
         << "\"connection_growth_per_cycle\":0,"
-        << "\"total_queries\":" << PerfMonitor::instance().totalQueries()
+        << "\"total_queries\":" << PerfMonitor::instance().totalQueries() << ","
+        << "\"min_ttl_secs\":" << CachingResolver::getMinTTL() << ","
+        << "\"negative_ttl_secs\":" << CachingResolver::getNegativeTTL()
       << "},"
       << "\"top_domains\":[";
 

@@ -9,6 +9,9 @@
 #include <cstring>
 #include <immintrin.h>
 
+std::atomic<int> CachingResolver::minTTLSecs{600};
+std::atomic<int> CachingResolver::negativeTTLSecs{300};
+
 uint64_t CachingResolver::turboHash(const CacheKey& k) {
     uint64_t h = 14695981039346656037ULL;
     for (char c : k.name) { h ^= (uint8_t)c; h *= 1099511628211ULL; }
@@ -223,7 +226,7 @@ void CachingResolver::maintain() {
                 std::shared_lock lock(cacheMutex_);
                 for (auto& [key, entry] : cache_) {
                         if (running_ && needsRefresh(entry) &&
-                            entry.ttl >= minTTL) {
+                            entry.ttl >= std::chrono::seconds(minTTLSecs.load())) {
                             toRefresh.emplace_back(key, DnsQuestion{key.name, key.type, key.qclass});
                         }
                     }
@@ -283,7 +286,7 @@ void CachingResolver::refreshEntry(const CacheKey& key, const DnsQuestion& quest
         if (reply->header.rcode() == DnsRcode::NXDomain ||
             reply->header.rcode() == DnsRcode::ServFail ||
             reply->header.rcode() == DnsRcode::Refused) {
-            ttl = negativeTTL;
+            ttl = std::chrono::seconds(negativeTTLSecs.load());
         }
         clobberTTL(*reply, ttl);
         std::unique_lock lock(cacheMutex_);
@@ -350,7 +353,7 @@ DnsMessagePtr CachingResolver::query(const DnsMessage& req, bool allowFanOut) {
         if (reply->header.rcode() == DnsRcode::NXDomain ||
             reply->header.rcode() == DnsRcode::ServFail ||
             reply->header.rcode() == DnsRcode::Refused) {
-            ttl = negativeTTL;
+            ttl = std::chrono::seconds(negativeTTLSecs.load());
         }
         clobberTTL(*reply, ttl);
         auto expiresAt = std::chrono::steady_clock::now() + ttl;
@@ -414,8 +417,9 @@ std::chrono::seconds CachingResolver::computeCacheTTL(const DnsMessage& reply) {
             has_rr = true;
         }
     }
-    std::chrono::seconds ttl = has_rr ? std::chrono::seconds(min_ttl) : minTTL;
-    if (ttl < minTTL) ttl = minTTL;
+    auto curMin = std::chrono::seconds(minTTLSecs.load());
+    std::chrono::seconds ttl = has_rr ? std::chrono::seconds(min_ttl) : curMin;
+    if (ttl < curMin) ttl = curMin;
     if (ttl > maxTTL) ttl = maxTTL;
     return ttl;
 }

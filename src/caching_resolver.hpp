@@ -36,6 +36,12 @@ public:
     int64_t total() const;
     int64_t turboHits() const { return turboHits_.load(); }
 
+    // Dynamic TTL controls (used by AutoTuner)
+    static int getMinTTL() { return minTTLSecs.load(); }
+    static int getNegativeTTL() { return negativeTTLSecs.load(); }
+    static void setMinTTL(int secs) { minTTLSecs.store(secs); }
+    static void setNegativeTTL(int secs) { negativeTTLSecs.store(secs); }
+
 private:
     struct CacheKey {
         std::string name;
@@ -105,9 +111,10 @@ private:
     void warmupCache();
 
     static constexpr size_t maxCacheSize = 50000;
-    static constexpr std::chrono::seconds minTTL{120};
     static constexpr std::chrono::seconds maxTTL{7200};
-    static constexpr std::chrono::seconds negativeTTL{30};
+
+    static std::atomic<int> minTTLSecs;
+    static std::atomic<int> negativeTTLSecs;
 
     bool shouldCache(const DnsQuestion& question, const DnsMessage& reply);
     std::chrono::seconds computeCacheTTL(const DnsMessage& reply);

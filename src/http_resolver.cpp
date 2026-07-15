@@ -492,7 +492,7 @@ bool HttpResolver::Connection::open(const std::string& proxyHost,
     boost::system::error_code openEc;
     stream->next_layer().open(asio::ip::tcp::v4(), openEc);
     if (openEc) { ec = openEc; return false; }
-    setSocketTimeout(stream->next_layer(), 2);
+    setSocketTimeout(stream->next_layer(), 4);
     { int syn = 2; setsockopt(stream->next_layer().native_handle(), IPPROTO_TCP, TCP_SYNCNT, &syn, sizeof(syn)); }
 
     bool bypass = useProxy && matchesNoProxy(host, proxyNoProxy);
@@ -542,7 +542,7 @@ bool HttpResolver::Connection::open(const std::string& proxyHost,
         boost::system::error_code reOpenEc;
         stream->next_layer().open(asio::ip::tcp::v4(), reOpenEc);
         if (reOpenEc) { ec = reOpenEc; return false; }
-        setSocketTimeout(stream->next_layer(), 2);
+        setSocketTimeout(stream->next_layer(), 4);
         { int syn = 2; setsockopt(stream->next_layer().native_handle(), IPPROTO_TCP, TCP_SYNCNT, &syn, sizeof(syn)); }
     }
 
@@ -912,7 +912,7 @@ DnsMessagePtr HttpResolver::doPost(const DnsMessage& req, bool allowFanOut) {
     int backoffMs = 10;
     int totalConns = 0;
     for (auto& pool : pools_) totalConns += pool.connections.size();
-    for (int attempt = 0; attempt < std::min(totalConns * 2, 12); ++attempt) {
+    for (int attempt = 0; attempt < std::min(totalConns, 3); ++attempt) {
         for (auto& pool : pools_) {
             auto* conn = getNextConnection(pool);
             if (!conn) continue;
@@ -928,7 +928,7 @@ DnsMessagePtr HttpResolver::doPost(const DnsMessage& req, bool allowFanOut) {
             if (conn->poolRef) conn->poolRef->errors++;
             conn->inUse = false;
         }
-        if (attempt < 4) {
+        if (attempt < 2) {
             std::this_thread::sleep_for(std::chrono::milliseconds(backoffMs));
             backoffMs *= 2;
         }

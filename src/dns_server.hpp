@@ -54,7 +54,7 @@ private:
     std::atomic<bool> running_{true};
 
     // SO_REUSEPORT + multi-worker
-    static constexpr int NUM_WORKERS = 2;
+    static constexpr int NUM_WORKERS = 8;
     std::vector<std::thread> workerThreads_;
     void udpWorker(int id, uint16_t port);
 
