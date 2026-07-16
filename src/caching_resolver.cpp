@@ -278,7 +278,9 @@ void CachingResolver::refreshEntry(const CacheKey& key, const DnsQuestion& quest
     query.header.qdcount = 1;
     query.questions.push_back(question);
 
+    PerfMonitor::setNoiseFilter(true);
     auto reply = back_->query(query);
+    PerfMonitor::setNoiseFilter(false);
     if (!reply) return;
 
     if (shouldCache(question, *reply)) {
@@ -502,7 +504,10 @@ void CachingResolver::doAdaptivePrewarm() {
 
         auto q = DnsMessage::createQuery(name, DnsType::A);
         if (q) {
-            if (back_->query(*q, false)) {
+            PerfMonitor::setNoiseFilter(true);
+            auto reply = back_->query(*q, false);
+            PerfMonitor::setNoiseFilter(false);
+            if (reply) {
                 prewarmed++;
             }
         }

@@ -5,12 +5,15 @@
 #include <cmath>
 #include <deque>
 
+thread_local bool PerfMonitor::noiseFilter_ = false;
+
 PerfMonitor& PerfMonitor::instance() {
     static PerfMonitor inst;
     return inst;
 }
 
 void PerfMonitor::recordLatency(std::chrono::microseconds us) {
+    if (noiseFilter_) return;
     auto idx = latencyRing_.writeIdx_.fetch_add(1, std::memory_order_relaxed);
     latencyRing_.latencies_[idx % WINDOW_SIZE].store(us.count(), std::memory_order_relaxed);
 }
@@ -20,6 +23,7 @@ void PerfMonitor::recordDnsQuery() {
 }
 
 void PerfMonitor::recordDomainLatency(const std::string& domain, std::chrono::microseconds us) {
+    if (noiseFilter_) return;
     // Extract base domain (up to 2 labels)
     auto dot = domain.rfind('.');
     if (dot == std::string::npos || dot == 0) return;

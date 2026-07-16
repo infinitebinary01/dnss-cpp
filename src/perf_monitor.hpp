@@ -41,6 +41,11 @@ public:
 
     void setSupplementaryStats(SupplementaryStatsFn fn);
 
+    // Noise filter: background queries (prewarm, refresh) can be marked as noise
+    // so they don't pollute user-visible latency/domain stats
+    static bool isNoiseFiltered() { return noiseFilter_; }
+    static void setNoiseFilter(bool on) { noiseFilter_ = on; }
+
     PerfSnapshot snapshot() const;
     int64_t totalQueries() const { return counters_.queries_.load(std::memory_order_relaxed); }
 
@@ -69,6 +74,8 @@ private:
 
     mutable std::mutex statsFnMutex_;
     mutable SupplementaryStatsFn extraStatsFn_;
+
+    static thread_local bool noiseFilter_;
 
     // Per-domain latency tracking
     struct DomainLatency {
