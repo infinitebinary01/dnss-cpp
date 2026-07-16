@@ -492,8 +492,8 @@ bool HttpResolver::Connection::open(const std::string& proxyHost,
     boost::system::error_code openEc;
     stream->next_layer().open(asio::ip::tcp::v4(), openEc);
     if (openEc) { ec = openEc; return false; }
-    setSocketTimeout(stream->next_layer(), 4);
-    { int syn = 2; setsockopt(stream->next_layer().native_handle(), IPPROTO_TCP, TCP_SYNCNT, &syn, sizeof(syn)); }
+    setSocketTimeout(stream->next_layer(), 2);
+    { int syn = 1; setsockopt(stream->next_layer().native_handle(), IPPROTO_TCP, TCP_SYNCNT, &syn, sizeof(syn)); }
 
     bool bypass = useProxy && matchesNoProxy(host, proxyNoProxy);
     if (useProxy && !bypass) {
@@ -542,8 +542,8 @@ bool HttpResolver::Connection::open(const std::string& proxyHost,
         boost::system::error_code reOpenEc;
         stream->next_layer().open(asio::ip::tcp::v4(), reOpenEc);
         if (reOpenEc) { ec = reOpenEc; return false; }
-        setSocketTimeout(stream->next_layer(), 4);
-        { int syn = 2; setsockopt(stream->next_layer().native_handle(), IPPROTO_TCP, TCP_SYNCNT, &syn, sizeof(syn)); }
+        setSocketTimeout(stream->next_layer(), 2);
+        { int syn = 1; setsockopt(stream->next_layer().native_handle(), IPPROTO_TCP, TCP_SYNCNT, &syn, sizeof(syn)); }
     }
 
     auto ep = resolveHost(ctx, host, static_cast<uint16_t>(std::stoi(port)));
