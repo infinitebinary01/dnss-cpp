@@ -72,6 +72,9 @@ private:
     // Turbo threader state
     int turboCycles_ = 0;
 
+    // Anomaly cooldown: after a cut, prevent growth for N cycles
+    int anomalyCooldown_ = 0;
+
     double computeTrend();
     double computeVariance();
     double computeQps();

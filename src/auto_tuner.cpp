@@ -167,6 +167,85 @@ void AutoTuner::tune() {
     if (lat < 50 && err < 0.01) consecutiveLowLoad_++;
     else consecutiveLowLoad_ = std::max(0, consecutiveLowLoad_ - 1);
 
+    // --- Anomaly detection (runs BEFORE growth so cuts are not undone) ---
+    int load = perf.threadPoolLoad;
+    bool anomalyHit = false;
+
+    // Stuck queue: pending > 200 for 3+ cycles
+    if (load > 200 && consecutiveHighLat_ >= 3) {
+        int curT = threadCount_.load();
+        int curC = connCount_.load();
+        int newT = std::max(curT - 2, MIN_THREADS);
+        int newC = std::max(curC - 2, MIN_CONNS);
+        threadCount_.store(newT);
+        connCount_.store(newC);
+        int curMin = CachingResolver::getMinTTL();
+        CachingResolver::setMinTTL(std::min(curMin + 120, 1200));
+        CachingResolver::setNegativeTTL(std::min(
+            CachingResolver::getNegativeTTL() + 120, 600));
+        LOG_WARN("AI-Tuner: ANOMALY — queue=" + std::to_string(load) +
+                 " cutting threads=" + std::to_string(newT) +
+                 " conns=" + std::to_string(newC));
+        consecutiveHighLat_ = 0;
+        consecutiveHighErr_ = 0;
+        anomalyHit = true;
+    }
+
+    // Error spike: >3% for 2+ consecutive cycles
+    if (err > 0.03 && consecutiveHighErr_ >= 2) {
+        int curC = connCount_.load();
+        connCount_.store(std::max(curC - 1, MIN_CONNS));
+        LOG_WARN("AI-Tuner: ANOMALY — error spike " + std::to_string(err) +
+                 " cutting connections");
+        consecutiveHighErr_ = 0;
+        anomalyHit = true;
+    }
+
+    // Hit rate collapse: <50% after 60+ samples
+    if (hitRate < 0.5 && samplesCollected_ > 60) {
+        CachingResolver::setMinTTL(std::min(
+            CachingResolver::getMinTTL() + 300, 1800));
+        CachingResolver::setNegativeTTL(std::min(
+            CachingResolver::getNegativeTTL() + 120, 900));
+        LOG_WARN("AI-Tuner: ANOMALY — hit rate collapse to " +
+                 std::to_string(hitRate) + " increasing TTLs");
+        anomalyHit = true;
+    }
+
+    bool skipGrowth = anomalyHit;
+    if (anomalyHit) {
+        anomalyCooldown_ = 6; // prevent growth for ~30 seconds
+    } else if (anomalyCooldown_ > 0) {
+        anomalyCooldown_--;
+        if (anomalyCooldown_ > 0) skipGrowth = true;
+    }
+
+    if (skipGrowth) {
+        prevLatency_ = lat;
+        prevErrorRate_ = err;
+        samplesCollected_++;
+        LOG_INFO("AI-Tuner:" +
+                 std::string(anomalyHit ? " ANOMALY" : "") +
+                 " cooldown=" + std::to_string(anomalyCooldown_) +
+                 " conns=" + std::to_string(connCount_.load()) +
+                 " threads=" + std::to_string(threadCount_.load()) +
+                 " refresh=" + std::to_string(refreshPct_.load()) + "%" +
+                 " minTTL=" + std::to_string(CachingResolver::getMinTTL()) + "s" +
+                 " negTTL=" + std::to_string(CachingResolver::getNegativeTTL()) + "s" +
+                 " fanout=" + (fanOut_.load() ? "on" : "off") +
+                 " lat=" + std::to_string(lat) + "ms" +
+                 " trend=" + std::to_string(trend) +
+                 " var=" + std::to_string(variance) +
+                 " err=" + std::to_string(err) +
+                 " hit=" + std::to_string(hitRate) +
+                 " pid=" + std::to_string(pidOutput) +
+                 " load=" + std::to_string(load) +
+                 " urgen=" + std::to_string(latUrgency) +
+                 " gap=" + std::to_string(static_cast<int>(LatencyManager::instance().gapPct())) +
+                 "% bot=" + LatencyManager::instance().bottleneck());
+        return;
+    }
+
     // --- Connection count (turbo-aware) ---
     double util = perf.connUtilization;
     int curConn = connCount_.load();
@@ -268,7 +347,6 @@ void AutoTuner::tune() {
     }
 
     // --- Thread pool (turbo-aware) ---
-    int load = perf.threadPoolLoad;
     int curThreads = threadCount_.load();
     int newThreads = curThreads;
 
@@ -387,43 +465,6 @@ void AutoTuner::tune() {
             LOG_DEBUG("AI-Tuner: -60s minTTL (lat=" + std::to_string(lat) +
                       " hit=" + std::to_string(hitRate) + ")");
         }
-    }
-
-    // --- Anomaly detection: pending queue stuck ---
-    if (load > 200 && consecutiveHighLat_ >= 3) {
-        int curThreads = threadCount_.load();
-        int newT = std::max(curThreads - 2, MIN_THREADS);
-        threadCount_.store(newT);
-        int curC = connCount_.load();
-        connCount_.store(std::max(curC - 2, MIN_CONNS));
-        LOG_WARN("AI-Tuner: ANOMALY — queue=" + std::to_string(load) +
-                 " cutting threads=" + std::to_string(newT) +
-                 " conns=" + std::to_string(connCount_.load()));
-        // Force cache more aggressively when queue is stuck
-        int curMin = CachingResolver::getMinTTL();
-        CachingResolver::setMinTTL(std::min(curMin + 120, 1200));
-        CachingResolver::setNegativeTTL(std::min(
-            CachingResolver::getNegativeTTL() + 120, 600));
-        consecutiveHighLat_ = 0;
-    }
-
-    // --- Anomaly detection: error spike ---
-    if (err > 0.03 && consecutiveHighErr_ >= 2) {
-        int curC = connCount_.load();
-        connCount_.store(std::max(curC - 1, MIN_CONNS));
-        LOG_WARN("AI-Tuner: ANOMALY — error spike " + std::to_string(err) +
-                 " cutting connections");
-        consecutiveHighErr_ = 0;
-    }
-
-    // --- Anomaly detection: hit rate collapse ---
-    if (hitRate < 0.5 && samplesCollected_ > 60) {
-        CachingResolver::setMinTTL(std::min(
-            CachingResolver::getMinTTL() + 300, 1800));
-        CachingResolver::setNegativeTTL(std::min(
-            CachingResolver::getNegativeTTL() + 120, 900));
-        LOG_WARN("AI-Tuner: ANOMALY — hit rate collapse to " +
-                 std::to_string(hitRate) + " increasing TTLs");
     }
 
     prevLatency_ = lat;

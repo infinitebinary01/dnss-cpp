@@ -912,7 +912,7 @@ DnsMessagePtr HttpResolver::doPost(const DnsMessage& req, bool allowFanOut) {
     int backoffMs = 10;
     int totalConns = 0;
     for (auto& pool : pools_) totalConns += pool.connections.size();
-    for (int attempt = 0; attempt < std::min(totalConns, 3); ++attempt) {
+    for (int attempt = 0; attempt < std::min(totalConns, 2); ++attempt) {
         for (auto& pool : pools_) {
             auto* conn = getNextConnection(pool);
             if (!conn) continue;
