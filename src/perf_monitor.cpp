@@ -62,6 +62,7 @@ void PerfMonitor::recordCacheMiss() {
 }
 
 void PerfMonitor::recordError() {
+    if (noiseFilter_) return;
     counters_.errors_.fetch_add(1, std::memory_order_relaxed);
 }
 
