@@ -502,44 +502,29 @@ void DnsServer::handleQuery(const uint8_t* data, size_t len,
 
         DnsMessagePtr reply;
 
-        std::string overrideAddr;
-        if (overrides.getMostSpecific(q.qname, overrideAddr)) {
-            try {
-                asio::io_context ctx;
-                asio::ip::udp::socket tmpSock(ctx);
-                asio::ip::udp::resolver resolv(ctx);
-                auto colon = overrideAddr.find(':');
-                std::string ovHost = (colon != std::string::npos) ? overrideAddr.substr(0, colon) : overrideAddr;
-                std::string ovPort = (colon != std::string::npos) ? overrideAddr.substr(colon + 1) : "53";
-                auto eps = resolv.resolve(ovHost, ovPort);
-                tmpSock.open(asio::ip::udp::v4());
-                auto wire = req->pack();
-                tmpSock.send_to(asio::buffer(wire), *eps.begin());
-                std::array<uint8_t, 4096> respBuf;
-                asio::ip::udp::endpoint from;
-                size_t n = tmpSock.receive_from(asio::buffer(respBuf), from);
-                reply = DnsMessage::parse(respBuf.data(), n);
-                if (reply) reply->header.id = req->header.id;
-            } catch (const std::exception& e) {
-                LOG_ERROR("[" + traceId + "] Override error: " + std::string(e.what()));
-                reply = DnsMessage::createError(*req, DnsRcode::ServFail);
-                if (reply) PerfMonitor::instance().recordError();
-            }
-            LOG_DEBUG("[" + traceId + "] override -> " + overrideAddr);
-        } else if (!unqUpstream.empty()) {
-            auto dot = q.qname.find('.');
-            auto nextDot = (dot != std::string::npos) ? q.qname.find('.', dot + 1) : std::string::npos;
-            bool isUnq = (dot == std::string::npos) || (nextDot == std::string::npos) || (dot == q.qname.size() - 1);
-            if (isUnq) {
+        // Reject .local (mDNS) queries — they don't belong on public resolvers
+        // and will hang until timeout (RFC 6762 reserves .local for link-local mDNS)
+        static const std::string localSuffix(".local");
+        if (q.qname.size() >= localSuffix.size() &&
+            q.qname.compare(q.qname.size() - localSuffix.size(), localSuffix.size(), localSuffix) == 0) {
+            reply = DnsMessage::createError(*req, DnsRcode::NXDomain);
+            LOG_DEBUG("Rejected .local query: " + q.qname);
+        }
+
+        if (!reply) {
+            std::string overrideAddr;
+            if (overrides.getMostSpecific(q.qname, overrideAddr)) {
                 try {
                     asio::io_context ctx;
                     asio::ip::udp::socket tmpSock(ctx);
                     asio::ip::udp::resolver resolv(ctx);
-                    auto colon = unqUpstream.find(':');
-                    std::string uHost = (colon != std::string::npos) ? unqUpstream.substr(0, colon) : unqUpstream;
-                    std::string uPort = (colon != std::string::npos) ? unqUpstream.substr(colon + 1) : "53";
-                    auto eps = resolv.resolve(uHost, uPort);
+                    auto colon = overrideAddr.find(':');
+                    std::string ovHost = (colon != std::string::npos) ? overrideAddr.substr(0, colon) : overrideAddr;
+                    std::string ovPort = (colon != std::string::npos) ? overrideAddr.substr(colon + 1) : "53";
+                    auto eps = resolv.resolve(ovHost, ovPort);
                     tmpSock.open(asio::ip::udp::v4());
+                    timeval tv; tv.tv_sec = 2; tv.tv_usec = 0;
+                    setsockopt(tmpSock.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
                     auto wire = req->pack();
                     tmpSock.send_to(asio::buffer(wire), *eps.begin());
                     std::array<uint8_t, 4096> respBuf;
@@ -548,15 +533,45 @@ void DnsServer::handleQuery(const uint8_t* data, size_t len,
                     reply = DnsMessage::parse(respBuf.data(), n);
                     if (reply) reply->header.id = req->header.id;
                 } catch (const std::exception& e) {
-                    LOG_ERROR("[" + traceId + "] Unqualified upstream error: " + std::string(e.what()));
+                    LOG_ERROR("[" + traceId + "] Override error: " + std::string(e.what()));
                     reply = DnsMessage::createError(*req, DnsRcode::ServFail);
                     if (reply) PerfMonitor::instance().recordError();
+                }
+                LOG_DEBUG("[" + traceId + "] override -> " + overrideAddr);
+            } else if (!unqUpstream.empty()) {
+                auto dot = q.qname.find('.');
+                auto nextDot = (dot != std::string::npos) ? q.qname.find('.', dot + 1) : std::string::npos;
+                bool isUnq = (dot == std::string::npos) || (nextDot == std::string::npos) || (dot == q.qname.size() - 1);
+                if (isUnq) {
+                    try {
+                        asio::io_context ctx;
+                        asio::ip::udp::socket tmpSock(ctx);
+                        asio::ip::udp::resolver resolv(ctx);
+                        auto colon = unqUpstream.find(':');
+                        std::string uHost = (colon != std::string::npos) ? unqUpstream.substr(0, colon) : unqUpstream;
+                        std::string uPort = (colon != std::string::npos) ? unqUpstream.substr(colon + 1) : "53";
+                        auto eps = resolv.resolve(uHost, uPort);
+                        tmpSock.open(asio::ip::udp::v4());
+                        timeval tv; tv.tv_sec = 2; tv.tv_usec = 0;
+                        setsockopt(tmpSock.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+                        auto wire = req->pack();
+                        tmpSock.send_to(asio::buffer(wire), *eps.begin());
+                        std::array<uint8_t, 4096> respBuf;
+                        asio::ip::udp::endpoint from;
+                        size_t n = tmpSock.receive_from(asio::buffer(respBuf), from);
+                        reply = DnsMessage::parse(respBuf.data(), n);
+                        if (reply) reply->header.id = req->header.id;
+                    } catch (const std::exception& e) {
+                        LOG_ERROR("[" + traceId + "] Unqualified upstream error: " + std::string(e.what()));
+                        reply = DnsMessage::createError(*req, DnsRcode::ServFail);
+                        if (reply) PerfMonitor::instance().recordError();
+                    }
+                } else {
+                    reply = resolver->query(*req);
                 }
             } else {
                 reply = resolver->query(*req);
             }
-        } else {
-            reply = resolver->query(*req);
         }
 
         if (!reply) {
