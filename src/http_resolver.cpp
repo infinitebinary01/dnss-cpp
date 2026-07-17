@@ -480,6 +480,7 @@ void HttpResolver::Connection::buildHeaderPrefix() {
 
 void HttpResolver::Connection::close() {
     if (stream) {
+        if (connCtrl) connCtrl->unmanage(stream.get());
         boost::system::error_code ec;
         stream->next_layer().close(ec);
         stream.reset();
@@ -772,6 +773,7 @@ void HttpResolver::ensurePoolSize(UpstreamPool& pool, size_t target) {
         conn->port = pool.port;
         conn->target = pool.target;
         conn->poolRef = &pool;
+        conn->connCtrl = &connCtrl_;
         conn->buildHeaderPrefix();
         pool.connections.push_back(std::move(conn));
     }

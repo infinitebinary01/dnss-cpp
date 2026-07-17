@@ -46,6 +46,7 @@ private:
         std::string target;
         std::string headerPrefix; // pre-built HTTP header (without Content-Length)
         UpstreamPool* poolRef{nullptr};
+        ConnectionController* connCtrl{nullptr};
 
         void buildHeaderPrefix();
         void close();

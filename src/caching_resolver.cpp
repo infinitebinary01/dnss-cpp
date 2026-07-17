@@ -369,7 +369,30 @@ DnsMessagePtr CachingResolver::query(const DnsMessage& req, bool allowFanOut) {
 
     // Honor auto-tuner's fan-out decision (honed globally based on latency/errors)
     auto reply = back_->query(req, AutoTuner::instance().fanOutEnabled());
-    if (!reply) return nullptr;
+    if (!reply) {
+        // Cache upstream failure as SERVFAIL to avoid hammering a failing upstream
+        // TTL = negativeTTL/10 (capped 30-60s) so we retry periodically for recovery
+        auto errorReply = DnsMessage::createError(req, DnsRcode::ServFail);
+        if (errorReply) {
+            int ttlSecs = std::clamp(negativeTTLSecs.load() / 10, 30, 60);
+            auto ttl = std::chrono::seconds(ttlSecs);
+            clobberTTL(*errorReply, ttl);
+            auto expiresAt = std::chrono::steady_clock::now() + ttl;
+            {
+                std::unique_lock lock(cacheMutex_);
+                if (cache_.size() >= maxCacheSize) return errorReply;
+                CacheEntry entry;
+                entry.msg = errorReply->copy();
+                entry.ttl = ttl;
+                entry.expiresAt = expiresAt;
+                cache_[key] = std::move(entry);
+            }
+            turboInsert(h, errorReply->copy(), expiresAt);
+            cacheRecorded_++;
+            LOG_DEBUG("cache: cached upstream failure " + q.qname + " TTL=" + std::to_string(ttlSecs) + "s");
+        }
+        return errorReply;
+    }
 
     if (shouldCache(q, *reply)) {
         auto ttl = computeCacheTTL(*reply);
