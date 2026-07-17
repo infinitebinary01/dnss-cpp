@@ -35,12 +35,15 @@ public:
     int64_t misses() const;
     int64_t total() const;
     int64_t turboHits() const { return turboHits_.load(); }
+    int64_t staleHits() const { return staleHits_.load(); }
 
     // Dynamic TTL controls (used by AutoTuner)
     static int getMinTTL() { return minTTLSecs.load(); }
     static int getNegativeTTL() { return negativeTTLSecs.load(); }
+    static int getStaleThreshold() { return staleThresholdSecs.load(); }
     static void setMinTTL(int secs) { minTTLSecs.store(secs); }
     static void setNegativeTTL(int secs) { negativeTTLSecs.store(secs); }
+    static void setStaleThreshold(int secs) { staleThresholdSecs.store(secs); }
 
 private:
     struct CacheKey {
@@ -97,6 +100,7 @@ private:
     std::atomic<int64_t> cacheMisses_{0};
     std::atomic<int64_t> cacheRecorded_{0};
     std::atomic<int64_t> preemptiveRefreshes_{0};
+    std::atomic<int64_t> staleHits_{0};
     std::atomic<int64_t> turboHits_{0};
 
     // Persistent disk cache
@@ -115,6 +119,7 @@ private:
 
     static std::atomic<int> minTTLSecs;
     static std::atomic<int> negativeTTLSecs;
+    static std::atomic<int> staleThresholdSecs;
 
     bool shouldCache(const DnsQuestion& question, const DnsMessage& reply);
     std::chrono::seconds computeCacheTTL(const DnsMessage& reply);

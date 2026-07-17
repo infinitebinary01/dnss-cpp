@@ -129,27 +129,56 @@ void HttpResolver::UpstreamPool::parseUrl(const std::string& url) {
     }
 }
 
+std::string HttpResolver::detectProxy() const {
+    const char* homeEnv = std::getenv("HOME");
+    std::string home = homeEnv ? homeEnv : "";
+
+    // 1) ~/.lynx-proxy — NM dispatcher writes this; authoritative if it exists.
+    //    If empty (dispatcher cleared it), treat as "no proxy" and skip all fallbacks.
+    std::string proxyPath = home + "/.lynx-proxy";
+    std::ifstream pf(proxyPath);
+    if (pf.is_open()) {
+        std::string line;
+        std::getline(pf, line);
+        while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
+            line.pop_back();
+        if (!line.empty()) {
+            LOG_INFO("Proxy: " + line + " (from ~/.lynx-proxy)");
+            return line;
+        }
+        LOG_INFO("Proxy: ~/.lynx-proxy empty — direct (dispatcher says no proxy)");
+        return {};
+    }
+
+    // 2) env var
+    const char* envProxy = std::getenv("https_proxy");
+    if (!envProxy) envProxy = std::getenv("HTTPS_PROXY");
+    if (!envProxy) envProxy = std::getenv("http_proxy");
+    if (!envProxy) envProxy = std::getenv("HTTP_PROXY");
+    if (envProxy && envProxy[0]) {
+        LOG_INFO("Proxy: " + std::string(envProxy) + " (from env var)");
+        return envProxy;
+    }
+
+    // 3) GNOME gsettings
+    auto gnome = detectGnomeProxy();
+    if (!gnome.empty()) {
+        LOG_INFO("Proxy: " + gnome + " (from GNOME settings)");
+        return gnome;
+    }
+
+    return {};
+}
+
 HttpResolver::HttpResolver(const std::string& upstream, const std::string& caFile,
                            const std::string& fallback)
     : caFile_(caFile), fallback_(fallback),
       sslCtx_(asio::ssl::context::tlsv12_client) {
     pools_.emplace_back();
     pools_.back().parseUrl(upstream);
-    const char* envProxy = std::getenv("https_proxy");
-    if (!envProxy) envProxy = std::getenv("HTTPS_PROXY");
-    if (!envProxy) envProxy = std::getenv("http_proxy");
-    if (!envProxy) envProxy = std::getenv("HTTP_PROXY");
-    if (envProxy) proxy_ = envProxy;
+    proxy_ = detectProxy();
     const char* noProxy = std::getenv("no_proxy");
     if (noProxy) noProxy_ = noProxy;
-
-    if (proxy_.empty()) {
-        auto gnome = detectGnomeProxy();
-        if (!gnome.empty()) {
-            proxy_ = gnome;
-            LOG_INFO("Auto-detected proxy: " + proxy_);
-        }
-    }
 }
 
 HttpResolver::HttpResolver(const std::string& primaryUpstream, const std::string& secondaryUpstream,
@@ -163,21 +192,9 @@ HttpResolver::HttpResolver(const std::string& primaryUpstream, const std::string
         pools_.back().parseUrl(secondaryUpstream);
         LOG_INFO("Multi-upstream: racing " + primaryUpstream + " + " + secondaryUpstream);
     }
-    const char* envProxy = std::getenv("https_proxy");
-    if (!envProxy) envProxy = std::getenv("HTTPS_PROXY");
-    if (!envProxy) envProxy = std::getenv("http_proxy");
-    if (!envProxy) envProxy = std::getenv("HTTP_PROXY");
-    if (envProxy) proxy_ = envProxy;
+    proxy_ = detectProxy();
     const char* noProxy = std::getenv("no_proxy");
     if (noProxy) noProxy_ = noProxy;
-
-    if (proxy_.empty()) {
-        auto gnome = detectGnomeProxy();
-        if (!gnome.empty()) {
-            proxy_ = gnome;
-            LOG_INFO("Auto-detected proxy: " + proxy_);
-        }
-    }
 }
 
 HttpResolver::~HttpResolver() {
@@ -186,7 +203,10 @@ HttpResolver::~HttpResolver() {
     if (warmThread_.joinable())
         warmThread_.join();
     for (auto& pool : pools_)
-        for (auto& c : pool.connections) c->close();
+        for (auto& c : pool.connections) {
+            if (c->stream) connCtrl_.unmanage(c->stream.get());
+            c->close();
+        }
 }
 
 static bool matchesNoProxy(const std::string& host, const std::string& noProxy) {
@@ -375,51 +395,8 @@ void HttpResolver::init() {
 }
 
 void HttpResolver::reload() {
-    // Priority: 1) ~/.lynx-proxy 2) env var 3) GNOME gsettings 4) direct
-    std::lock_guard<std::mutex> lock(configMutex_);
-    proxy_.clear();
-
-    // 1) ~/.lynx-proxy file (written by switch-network.sh or NM dispatcher)
-    std::string home;
-    const char* homeEnv = std::getenv("HOME");
-    if (homeEnv) home = homeEnv;
-    std::string proxyPath = home + "/.lynx-proxy";
-    std::ifstream pf(proxyPath);
-    if (pf.is_open()) {
-        std::string line;
-        std::getline(pf, line);
-        while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
-            line.pop_back();
-        if (!line.empty()) {
-            proxy_ = line;
-            LOG_INFO("Reload: proxy set to " + proxy_ + " (from ~/.lynx-proxy)");
-        }
-    }
-
-    // 2) env var
-    if (proxy_.empty()) {
-        const char* envProxy = std::getenv("https_proxy");
-        if (!envProxy) envProxy = std::getenv("HTTPS_PROXY");
-        if (!envProxy) envProxy = std::getenv("http_proxy");
-        if (!envProxy) envProxy = std::getenv("HTTP_PROXY");
-        if (envProxy && envProxy[0]) {
-            proxy_ = envProxy;
-            LOG_INFO("Reload: proxy set to " + proxy_ + " (from env var)");
-        }
-    }
-
-    // 3) GNOME proxy
-    if (proxy_.empty()) {
-        auto gnome = detectGnomeProxy();
-        if (!gnome.empty()) {
-            proxy_ = gnome;
-            LOG_INFO("Reload: proxy set to " + proxy_ + " (from GNOME settings)");
-        }
-    }
-
-    if (proxy_.empty()) {
-        LOG_INFO("Reload: no proxy configured (direct)");
-    }
+    configMutex_.lock();
+    proxy_ = detectProxy();
 
     const char* noProxy = std::getenv("no_proxy");
     if (!noProxy) noProxy = std::getenv("NO_PROXY");
@@ -429,8 +406,37 @@ void HttpResolver::reload() {
         noProxy_.clear();
     }
 
+    bool oldUseProxy = useProxy_;
     useProxy_ = !proxy_.empty() && !matchesNoProxy(pools_[0].host, noProxy_);
     if (useProxy_) parseProxyUrl(proxy_, proxyHost_, proxyPort_);
+
+    // Proxy config changed — drain all connections so they re-establish
+    // with the new proxy/direct settings. Stale proxy CONNECT tunnels
+    // would otherwise block workers when the network changes.
+    // Closing also unblocks any in-flight workers stuck on dead sockets.
+    if (oldUseProxy != useProxy_) {
+        LOG_INFO("Proxy config changed — draining " +
+                 std::to_string(pools_[0].connections.size()) + " connections");
+        for (auto& pool : pools_) {
+            for (auto& c : pool.connections) {
+                if (c->stream) connCtrl_.unmanage(c->stream.get());
+                c->close();
+            }
+            pool.connections.clear();
+        }
+    }
+    configMutex_.unlock();
+
+    // Repopulate connections ASAP with the new proxy setting
+    if (oldUseProxy != useProxy_) {
+        int targetPerPool = AutoTuner::instance().recommendedConnections()
+                            / static_cast<int>(pools_.size());
+        if (targetPerPool < 2) targetPerPool = 2;
+        for (auto& pool : pools_) {
+            ensurePoolSize(pool, static_cast<size_t>(targetPerPool));
+            openPoolAsync(pool);
+        }
+    }
 
     LOG_INFO("HttpResolver: " + pools_[0].host + ":" + pools_[0].port + pools_[0].target
              + (useProxy_ ? " via proxy=" + proxyHost_ + ":" + proxyPort_ : ""));

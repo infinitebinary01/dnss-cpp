@@ -311,7 +311,8 @@ std::string MonitorServer::renderJson() {
       << "},"
       << "\"cache\":{"
         << "\"hit_rate\":" << perf.cacheHitRate << ","
-        << "\"turbo_hit_rate\":" << perf.turboHitRate
+        << "\"turbo_hit_rate\":" << perf.turboHitRate << ","
+        << "\"stale_hit_rate\":" << perf.staleHitRate
       << "},"
       << "\"errors\":{"
         << "\"rate\":" << perf.errorRate

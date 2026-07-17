@@ -11,6 +11,7 @@
 
 std::atomic<int> CachingResolver::minTTLSecs{600};
 std::atomic<int> CachingResolver::negativeTTLSecs{300};
+std::atomic<int> CachingResolver::staleThresholdSecs{300};
 
 uint64_t CachingResolver::turboHash(const CacheKey& k) {
     uint64_t h = 14695981039346656037ULL;
@@ -332,15 +333,35 @@ DnsMessagePtr CachingResolver::query(const DnsMessage& req, bool allowFanOut) {
     }
 
     // L2 main cache lookup
+    DnsMessagePtr staleMsg;
     {
         std::shared_lock lock(cacheMutex_);
         auto it = cache_.find(key);
-        if (it != cache_.end() && !isExpired(it->second) && it->second.msg) {
-            cacheHits_++;
-            PerfMonitor::instance().recordCacheHit();
-            turboInsert(h, it->second.msg, it->second.expiresAt);
-            return buildCachedReply(req, *it->second.msg);
+        if (it != cache_.end() && it->second.msg) {
+            if (!isExpired(it->second)) {
+                cacheHits_++;
+                PerfMonitor::instance().recordCacheHit();
+                turboInsert(h, it->second.msg, it->second.expiresAt);
+                return buildCachedReply(req, *it->second.msg);
+            }
+            // Expired but within stale threshold — serve stale, refresh async
+            auto staleLimit = it->second.expiresAt +
+                std::chrono::seconds(staleThresholdSecs.load());
+            if (std::chrono::steady_clock::now() < staleLimit) {
+                staleMsg = it->second.msg->copy();
+            }
         }
+    }
+
+    if (staleMsg) {
+        staleHits_++;
+        PerfMonitor::instance().recordCacheHit();
+        turboInsert(h, staleMsg, std::chrono::steady_clock::now() + std::chrono::seconds(60));
+        std::thread([this, key, q = DnsQuestion{q.qname, q.qtype, q.qclass}]() {
+            refreshEntry(key, q);
+        }).detach();
+        LOG_DEBUG("stale-while-revalidate: " + q.qname);
+        return buildCachedReply(req, *staleMsg);
     }
 
     cacheMisses_++;

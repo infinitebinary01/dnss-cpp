@@ -40,8 +40,14 @@ while true; do
         if [ -n "$PURL" ]; then
             PHOST=$(echo "$PURL" | sed -E 's|https?://([^:/]+).*|\1|')
             PPORT=$(echo "$PURL" | sed -E 's|.*:([0-9]+)/?$|\1|')
-            if ! timeout 2 bash -c "echo > /dev/tcp/$PHOST/$PPORT" 2>/dev/null; then
+            if timeout 2 bash -c "echo > /dev/tcp/$PHOST/$PPORT" 2>/dev/null; then
+                echo "$PURL" > "$HOME/.lynx-proxy"
+                export http_proxy="$PURL" https_proxy="$PURL" HTTP_PROXY="$PURL" HTTPS_PROXY="$PURL"
+                export no_proxy="localhost,127.0.0.1,::1" NO_PROXY="localhost,127.0.0.1,::1"
+                log "proxy $PURL reachable"
+            else
                 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
+                > "$HOME/.lynx-proxy"
                 log "proxy $PURL unreachable — starting direct"
             fi
         fi

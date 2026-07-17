@@ -349,9 +349,11 @@ int main(int argc, char* argv[]) {
                 [cr = std::weak_ptr<CachingResolver>(cacheResolver)](PerfSnapshot s) {
                     if (auto r = cr.lock()) {
                         int64_t th = r->turboHits();
+                        int64_t sh = r->staleHits();
                         int64_t hits = r->hits();
                         int64_t total = r->total();
                         s.turboHitRate = hits > 0 ? (double)th / hits : 0;
+                        s.staleHitRate = total > 0 ? (double)sh / total : 0;
                     }
                     return s;
                 });

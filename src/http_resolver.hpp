@@ -108,6 +108,9 @@ private:
 
     ConnectionController connCtrl_;
 
+    // Full proxy detection chain: ~/.lynx-proxy → env var → GNOME → empty (direct)
+    std::string detectProxy() const;
+
     static constexpr int MAX_CONNECTIONS = 128;
     static constexpr int MAX_ERRORS_BEFORE_ROTATE = 3;
     static constexpr int CONNECT_TIMEOUT_SEC = 4;

@@ -16,6 +16,7 @@ struct PerfSnapshot {
     double p95LatencyMs = 0;
     double cacheHitRate = 0;
     double turboHitRate = 0;
+    double staleHitRate = 0;
     double errorRate = 0;
     double connUtilization = 0;
     int activeConnections = 0;
