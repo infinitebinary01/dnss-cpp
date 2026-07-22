@@ -36,6 +36,7 @@ public:
     void recordCacheHit();
     void recordCacheMiss();
     void recordError();
+    void decayErrors();
     void recordConnUse(int active, int total);
     void recordThreadPoolLoad(int pending);
     void recordThreadPoolWorkers(int workers);

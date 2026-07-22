@@ -13,6 +13,8 @@
 #include <chrono>
 #include <vector>
 #include <array>
+#include <deque>
+#include <condition_variable>
 
 class CachingResolver : public Resolver {
 public:
@@ -23,6 +25,8 @@ public:
     void maintain() override;
     void reload() override;
     DnsMessagePtr query(const DnsMessage& req, bool allowFanOut = true) override;
+    DnsMessagePtr peekCache(const DnsMessage& req) override;
+    DnsMessagePtr peekCacheRaw(const uint8_t* data, size_t len) override;
 
     int countConnected() const override;
 
@@ -93,7 +97,19 @@ private:
     std::thread maintainThread_;
     std::thread refreshThread_;
     std::thread adaptivePrewarmThread_;
+    std::thread warmupThread_;
+    std::thread staleRefreshWorker_;
     std::atomic<bool> running_{false};
+
+    // Bounded stale-while-revalidate work queue (replaces detached thread storm)
+    std::mutex staleRefreshMutex_;
+    std::condition_variable staleRefreshCv_;
+    struct StaleRefreshWork {
+        CacheKey key;
+        DnsQuestion question;
+    };
+    std::deque<StaleRefreshWork> staleRefreshQueue_;
+    static constexpr size_t MAX_STALE_REFRESH_QUEUE = 64;
 
     std::atomic<int64_t> totalQueries_{0};
     std::atomic<int64_t> cacheHits_{0};

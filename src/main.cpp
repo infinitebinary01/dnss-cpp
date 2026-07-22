@@ -20,7 +20,7 @@
 #include "domain_map.hpp"
 #include "resolver.hpp"
 #include "caching_resolver.hpp"
-#include "http_resolver.hpp"
+#include "system_resolver.hpp"
 #include "dns_server.hpp"
 #include "https_server.hpp"
 #include "auto_tuner.hpp"
@@ -324,9 +324,7 @@ int main(int argc, char* argv[]) {
     if (cfg.enableDnsToHttps) {
         auto overrides = DomainMap::fromString(cfg.dnsServerForDomain);
 
-        auto rawResolver = std::make_unique<HttpResolver>(
-            cfg.httpsUpstream, cfg.httpsUpstream2,
-            cfg.httpsClientCAFile, cfg.fallbackUpstream);
+        auto rawResolver = std::make_unique<SystemResolver>();
 
         std::shared_ptr<Resolver> resolver;
         std::shared_ptr<CachingResolver> cacheResolver;
@@ -367,17 +365,9 @@ int main(int argc, char* argv[]) {
         });
         dnsThread.detach();
 
-        // Prewarm cache via CachingResolver so entries populate both tiers
+        // Prewarm cache
         if (cacheResolver) {
             std::thread prewarmThread([cr = cacheResolver]() {
-                for (int i = 0; i < 30; i++) {
-                    if (cr->countConnected() > 0) break;
-                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                }
-                if (cr->countConnected() == 0) {
-                    LOG_WARN("Prewarm: no connections ready, skipping");
-                    return;
-                }
                 static const char* doms[] = {
                     "google.com", "youtube.com", "facebook.com", "amazon.com",
                     "yahoo.com", "wikipedia.org", "reddit.com", "twitter.com",

@@ -15,6 +15,7 @@ endif()
 
 find_package(Boost REQUIRED COMPONENTS system)
 find_package(OpenSSL REQUIRED)
+find_package(CURL REQUIRED)
 
 set(SOURCES
     src/main.cpp
@@ -22,6 +23,7 @@ set(SOURCES
     src/dns_server.cpp
     src/https_server.cpp
     src/http_resolver.cpp
+    src/system_resolver.cpp
     src/domain_map.cpp
     src/dns_protocol.cpp
     src/perf_monitor.cpp
@@ -38,6 +40,7 @@ set(HEADERS
     src/dns_server.hpp
     src/https_server.hpp
     src/http_resolver.hpp
+    src/system_resolver.hpp
     src/domain_map.hpp
     src/logger.hpp
     src/perf_monitor.hpp
@@ -55,6 +58,7 @@ target_link_libraries(lynx PRIVATE
     ${Boost_LIBRARIES}
     OpenSSL::SSL
     OpenSSL::Crypto
+    CURL::libcurl
     pthread
 )
 

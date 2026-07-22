@@ -1,0 +1,1001 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lynx DoH DNS — Project Map</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1c2333;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #3fb950;
+    --accent3: #d2a8ff;
+    --accent4: #f0883e;
+    --accent5: #f778ba;
+    --accent6: #79c0ff;
+    --red: #f85149;
+    --yellow: #d29922;
+    --code-bg: #0d1117;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 2rem;
+  }
+  h1 { font-size: 2rem; margin-bottom: 0.25rem; }
+  h2 { font-size: 1.4rem; color: var(--accent); margin: 2rem 0 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
+  h3 { font-size: 1.1rem; color: var(--accent3); margin: 1.2rem 0 0.5rem; }
+  h4 { font-size: 0.95rem; color: var(--accent4); margin: 1rem 0 0.4rem; }
+  p, li { color: var(--text); font-size: 0.92rem; }
+  a { color: var(--accent); text-decoration: none; }
+  code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.15em 0.4em;
+    font-size: 0.85em;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  }
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem;
+    overflow-x: auto;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    margin: 0.5rem 0;
+  }
+  .subtitle { color: var(--text-dim); font-size: 1rem; margin-bottom: 2rem; }
+  .grid { display: grid; gap: 1rem; }
+  .grid-2 { grid-template-columns: 1fr 1fr; }
+  .grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+  @media (max-width: 900px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.2rem;
+    transition: border-color 0.2s;
+  }
+  .card:hover { border-color: var(--accent); }
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.6rem;
+    font-weight: 600;
+  }
+  .card-header .icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8rem;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .tag {
+    display: inline-block;
+    font-size: 0.72rem;
+    padding: 0.15em 0.5em;
+    border-radius: 99px;
+    font-weight: 600;
+    margin-right: 0.3rem;
+  }
+  .tag-blue { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .tag-green { background: rgba(63,185,80,0.15); color: var(--accent2); }
+  .tag-purple { background: rgba(210,168,255,0.15); color: var(--accent3); }
+  .tag-orange { background: rgba(240,136,62,0.15); color: var(--accent4); }
+  .tag-pink { background: rgba(247,120,186,0.15); color: var(--accent5); }
+  .tag-red { background: rgba(248,81,73,0.15); color: var(--red); }
+  .tag-yellow { background: rgba(210,153,34,0.15); color: var(--yellow); }
+
+  /* Flow diagram */
+  .flow-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin: 1rem 0;
+    overflow-x: auto;
+  }
+  .flow-row {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    justify-content: center;
+    flex-wrap: nowrap;
+    margin: 0.5rem 0;
+  }
+  .flow-box {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.5rem 0.8rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    white-space: nowrap;
+    text-align: center;
+    min-width: 100px;
+  }
+  .flow-arrow {
+    color: var(--text-dim);
+    font-size: 1.1rem;
+    padding: 0 0.3rem;
+    flex-shrink: 0;
+  }
+  .flow-label {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    text-align: center;
+    margin-top: 0.2rem;
+  }
+  .fb-client { background: rgba(88,166,255,0.1); border-color: var(--accent); color: var(--accent); }
+  .fb-dns { background: rgba(63,185,80,0.1); border-color: var(--accent2); color: var(--accent2); }
+  .fb-cache { background: rgba(210,168,255,0.1); border-color: var(--accent3); color: var(--accent3); }
+  .fb-resolver { background: rgba(240,136,62,0.1); border-color: var(--accent4); color: var(--accent4); }
+  .fb-upstream { background: rgba(247,120,186,0.1); border-color: var(--accent5); color: var(--accent5); }
+  .fb-monitor { background: rgba(121,192,255,0.1); border-color: var(--accent6); color: var(--accent6); }
+  .fb-tuner { background: rgba(210,153,34,0.1); border-color: var(--yellow); color: var(--yellow); }
+  .fb-conn { background: rgba(248,81,73,0.1); border-color: var(--red); color: var(--red); }
+
+  /* File tree */
+  .tree { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 0.82rem; line-height: 1.8; }
+  .tree .dir { color: var(--accent); font-weight: 600; }
+  .tree .file-cpp { color: var(--accent2); }
+  .tree .file-hpp { color: var(--accent3); }
+  .tree .file-other { color: var(--text-dim); }
+  .tree .comment { color: var(--text-dim); font-style: italic; }
+
+  /* Metrics table */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    margin: 0.5rem 0;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.5rem 0.8rem;
+    border-bottom: 1px solid var(--border);
+  }
+  th { color: var(--text-dim); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  td:first-child { font-weight: 600; }
+
+  /* Connector lines for class diagrams */
+  .class-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.8rem 1rem;
+    margin: 0.5rem 0;
+  }
+  .class-name {
+    font-weight: 700;
+    font-size: 0.95rem;
+    margin-bottom: 0.3rem;
+    font-family: 'SFMono-Regular', Consolas, monospace;
+  }
+  .class-detail {
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+  .class-detail code {
+    font-size: 0.78rem;
+    background: var(--surface2);
+  }
+  .inherits { color: var(--accent3); }
+  .owns { color: var(--accent2); }
+  .uses { color: var(--accent4); }
+  .singleton { color: var(--yellow); }
+
+  .toc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.5rem;
+    margin: 1rem 0 2rem;
+    display: inline-block;
+  }
+  .toc a { color: var(--accent); font-size: 0.88rem; }
+  .toc li { margin: 0.2rem 0; list-style: none; }
+  .toc li::before { content: "→ "; color: var(--text-dim); }
+  ul { padding-left: 1.2rem; }
+  ul li { margin: 0.2rem 0; }
+  .section-divider { border: none; border-top: 1px solid var(--border); margin: 2.5rem 0; }
+
+  .two-col { display: grid; grid-template-columns: auto 1fr; gap: 0.3rem 1rem; font-size: 0.85rem; }
+  .two-col dt { color: var(--text-dim); text-align: right; }
+  .two-col dd { color: var(--text); }
+
+  .stat-bar {
+    display: inline-block;
+    height: 6px;
+    border-radius: 3px;
+    margin-right: 0.3rem;
+    vertical-align: middle;
+  }
+</style>
+</head>
+<body>
+
+<h1>Lynx DoH DNS — Project Map</h1>
+<p class="subtitle">C++17 DNS-over-HTTPS proxy daemon &middot; v0.2.0 &middot; ~5,600 LOC across 14 source files</p>
+
+<nav class="toc">
+  <ul>
+    <li><a href="#overview">Project Overview</a></li>
+    <li><a href="#directory">Directory Structure</a></li>
+    <li><a href="#architecture">Architecture &amp; Data Flow</a></li>
+    <li><a href="#components">Component Deep Dive</a></li>
+    <li><a href="#classes">Class Relationships</a></li>
+    <li><a href="#cache">Cache Subsystem</a></li>
+    <li><a href="#networking">Networking &amp; Connections</a></li>
+    <li><a href="#tuning">Auto-Tuning &amp; Latency Control</a></li>
+    <li><a href="#monitoring">Monitoring &amp; Observability</a></li>
+    <li><a href="#build">Build System</a></li>
+    <li><a href="#tests">Test Suite</a></li>
+    <li><a href="#config">Configuration</a></li>
+  </ul>
+</nav>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2 id="overview">Project Overview</h2>
+
+<div class="grid grid-3">
+  <div class="card">
+    <div class="card-header"><div class="icon" style="background:rgba(88,166,255,0.15);color:var(--accent);">N</div>Networking</div>
+    <p>Full DNS wire protocol (UDP + TCP). DoH upstream via HTTPS POST with persistent connection pools. Multi-upstream racing. HTTP CONNECT proxy tunneling with auto-fallback.</p>
+  </div>
+  <div class="card">
+    <div class="card-header"><div class="icon" style="background:rgba(210,168,255,0.15);color:var(--accent3);">C</div>Caching</div>
+    <p>Dual-tier: L1 turbo cache (4096-slot spinlock, lock-free reads) + L2 LRU map. Stale-while-revalidate with bounded worker queue. Preemptive refresh. Adaptive prewarm. Binary disk persistence.</p>
+  </div>
+  <div class="card">
+    <div class="card-header"><div class="icon" style="background:rgba(210,153,34,0.15);color:var(--yellow);">A</div>Auto-Tuning</div>
+    <p>Kalman-filtered PID controller. LatencyManager urgency levels (0–5) with bottleneck detection. Dynamically adjusts connection count, thread pool, cache TTLs, fan-out, and refresh rates.</p>
+  </div>
+</div>
+
+<table style="margin-top:1rem;">
+  <tr><th>Aspect</th><th>Detail</th></tr>
+  <tr><td>Language</td><td>C++17 (GCC 9+ / Clang 12+)</td></tr>
+  <tr><td>Dependencies</td><td>Boost.Asio (system), OpenSSL 1.1+, pthread</td></tr>
+  <tr><td>Build</td><td>CMake 3.15+, optional io_uring, SSE4.2 auto-detect</td></tr>
+  <tr><td>License</td><td>MIT</td></tr>
+  <tr><td>Platforms</td><td>Linux (SO_REUSEPORT, TCP_FASTOPEN, TCP keepalive)</td></tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2 id="directory">Directory Structure</h2>
+
+<div class="flow-container" style="font-family: 'SFMono-Regular', Consolas, monospace; font-size: 0.82rem; line-height: 1.7;">
+<pre style="border:none;padding:0;margin:0;background:transparent;">
+<span class="dir">dnss-cpp/</span>
+├── <span class="dir">src/</span>                          <span class="comment">← 14 source files (~5,600 LOC)</span>
+│   ├── <span class="file-hpp">main.cpp</span>                 <span class="comment">← Entry point, CLI parsing, signal handling, wiring</span>
+│   ├── <span class="file-hpp">dns_protocol.hpp/cpp</span>     <span class="comment">← DNS wire format: parse, pack, createQuery, SSE4.2 name compare</span>
+│   ├── <span class="file-hpp">dns_server.hpp/cpp</span>       <span class="comment">← UDP/TCP listener, 16 SO_REUSEPORT workers, thread pool</span>
+│   ├── <span class="file-hpp">resolver.hpp</span>             <span class="comment">← Abstract Resolver interface (query, peekCache, init, maintain)</span>
+│   ├── <span class="file-hpp">caching_resolver.hpp/cpp</span> <span class="comment">← Dual-tier cache (L1 turbo + L2 LRU), stale-while-revalidate</span>
+│   ├── <span class="file-hpp">http_resolver.hpp/cpp</span>    <span class="comment">← HTTPS connection pool, proxy detection, multi-upstream racing</span>
+│   ├── <span class="file-hpp">connection_controller.hpp/cpp</span> <span class="comment">← Background health-check, reconnect queue, idle probing</span>
+│   ├── <span class="file-hpp">https_server.hpp/cpp</span>     <span class="comment">← HTTPS-to-DNS gateway (DoH server, Boost.Beast)</span>
+│   ├── <span class="file-hpp">auto_tuner.hpp/cpp</span>       <span class="comment">← Kalman PID controller, anomaly detection, turbo scaling</span>
+│   ├── <span class="file-hpp">latency_manager.hpp/cpp</span>  <span class="comment">← Urgency levels, bottleneck detection, boost computation</span>
+│   ├── <span class="file-hpp">perf_monitor.hpp/cpp</span>     <span class="comment">← Lock-free ring buffer, atomic counters, per-domain latency</span>
+│   ├── <span class="file-hpp">monitor_server.hpp/cpp</span>   <span class="comment">← HTTP dashboard, /api/stats JSON, /metrics Prometheus</span>
+│   ├── <span class="file-hpp">domain_map.hpp/cpp</span>       <span class="comment">← Domain→upstream mapping (most-specific match)</span>
+│   └── <span class="file-hpp">logger.hpp</span>               <span class="comment">← Singleton logger, text/JSON format, level filtering</span>
+├── <span class="dir">tests/</span>                       <span class="comment">← Python integration tests (functional, perf, resilience)</span>
+├── <span class="dir">scripts/</span>                     <span class="comment">← Operational scripts (loop, watchdog, DNS switch)</span>
+├── <span class="dir">www/</span>                         <span class="comment">← Dashboard web assets</span>
+├── <span class="file-other">CMakeLists.txt</span>              <span class="comment">← Build config (C++17, Boost, OpenSSL, SSE4.2, ASAN)</span>
+├── <span class="file-other">CMakePresets.json</span>           <span class="comment">← Build presets (debug, release)</span>
+├── <span class="file-other">config.json</span>                 <span class="comment">← Sample config (port 5353, Google DoH, cache enabled)</span>
+├── <span class="file-other">start.sh</span>                    <span class="comment">← Quick-start launcher</span>
+└── <span class="file-other">README.md</span>                   <span class="comment">← Documentation</span>
+</pre>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2 id="architecture">Architecture &amp; Data Flow</h2>
+
+<h3>Primary Path: DNS → HTTPS Proxy</h3>
+<div class="flow-container">
+  <div class="flow-row">
+    <div>
+      <div class="flow-box fb-client">DNS Client<br><small>dig / system resolver</small></div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div>
+      <div class="flow-box fb-dns">DnsServer<br><small>UDP :53 / TCP :53</small></div>
+      <div class="flow-label">16 SO_REUSEPORT workers</div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div>
+      <div class="flow-box fb-cache">peekCache<br><small>inline fast-path</small></div>
+      <div class="flow-label">sub-μs on hit</div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div>
+      <div class="flow-box fb-dns">ThreadPool<br><small>24 workers</small></div>
+      <div class="flow-label">backpressure at 300</div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div>
+      <div class="flow-box fb-cache">CachingResolver<br><small>L1 turbo → L2 LRU</small></div>
+      <div class="flow-label">stale-while-revalidate</div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div>
+      <div class="flow-box fb-resolver">HttpResolver<br><small>pooled HTTPS</small></div>
+      <div class="flow-label">multi-upstream racing</div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div>
+      <div class="flow-box fb-upstream">DoH Upstream<br><small>Cloudflare / Google</small></div>
+      <div class="flow-label">HTTP POST /dns-query</div>
+    </div>
+  </div>
+</div>
+
+<h3>Control Plane (runs in parallel)</h3>
+<div class="flow-container">
+  <div class="flow-row">
+    <div>
+      <div class="flow-box fb-monitor">PerfMonitor<br><small>ring buffer + counters</small></div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div>
+      <div class="flow-box fb-tuner">LatencyManager<br><small>urgency 0–5</small></div>
+      <div class="flow-label">bottleneck detection</div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div>
+      <div class="flow-box fb-tuner">AutoTuner<br><small>Kalman PID</small></div>
+      <div class="flow-label">every 3s</div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div>
+      <div class="flow-box" style="border-color:var(--text-dim);color:var(--text-dim);">
+        Adjusts<br><small>conns / threads / TTLs / fan-out</small>
+      </div>
+    </div>
+  </div>
+  <div class="flow-row" style="margin-top:1rem;">
+    <div>
+      <div class="flow-box fb-monitor">PerfMonitor<br><small>metrics</small></div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div>
+      <div class="flow-box fb-monitor">MonitorServer<br><small>:8080 HTTP</small></div>
+      <div class="flow-label">dashboard + /api/stats + /metrics</div>
+    </div>
+  </div>
+</div>
+
+<h3>Connection Lifecycle</h3>
+<div class="flow-container">
+  <div class="flow-row">
+    <div>
+      <div class="flow-box fb-resolver">warmUp()<br><small>async pool fill</small></div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div>
+      <div class="flow-box fb-conn">ConnectionController<br><small>manage()</small></div>
+      <div class="flow-label">register + keepalive</div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div>
+      <div class="flow-box fb-conn">healthCheck<br><small>every 12s idle</small></div>
+      <div class="flow-label">DNS query probe</div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div>
+      <div class="flow-box" style="border-color:var(--red);color:var(--red);">reconnectLoop<br><small>single worker thread</small></div>
+      <div class="flow-label">queue-driven, 50ms backoff</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2 id="components">Component Deep Dive</h2>
+
+<div class="grid grid-2">
+
+  <!-- DnsServer -->
+  <div class="card">
+    <div class="card-header">
+      <div class="icon" style="background:rgba(63,185,80,0.15);color:var(--accent2);">DS</div>
+      DnsServer
+      <span class="tag tag-green">core</span>
+    </div>
+    <p style="font-size:0.85rem;margin-bottom:0.5rem;"><code>dns_server.hpp/cpp</code> — 677 LOC</p>
+    <p style="font-size:0.85rem;">Listens on UDP and TCP simultaneously using <strong>SO_REUSEPORT</strong> with 16 kernel-level worker threads. Each worker opens its own socket, eliminating accept contention.</p>
+    <ul style="font-size:0.82rem;margin-top:0.5rem;">
+      <li><strong>Inline cache peek</strong> — UDP workers call <code>peekCache()</code> before enqueueing, bypassing the thread pool for cache hits (sub-millisecond).</li>
+      <li><strong>Backpressure</strong> — <code>tryEnqueue()</code> with limit of 300; when full, falls back to inline resolution instead of SERVFAIL.</li>
+      <li><strong>Rate limiter</strong> — Sharded token bucket (16 shards, FNV-1a hash) — 100 queries/sec per client IP.</li>
+      <li><strong>TCP</strong> — Separate thread pool (16 workers, 32 limit) prevents TCP from starving UDP.</li>
+      <li><strong>Domain overrides</strong> — Per-domain upstream routing via <code>DomainMap</code>.</li>
+      <li><strong>.local rejection</strong> — Returns NXDomain for mDNS (RFC 6762).</li>
+      <li><strong>Graceful shutdown</strong> — Self-connect + dummy UDP packets to unblock I/O.</li>
+    </ul>
+  </div>
+
+  <!-- CachingResolver -->
+  <div class="card">
+    <div class="card-header">
+      <div class="icon" style="background:rgba(210,168,255,0.15);color:var(--accent3);">CR</div>
+      CachingResolver
+      <span class="tag tag-purple">core</span>
+    </div>
+    <p style="font-size:0.85rem;margin-bottom:0.5rem;"><code>caching_resolver.hpp/cpp</code> — 635 LOC</p>
+    <p style="font-size:0.85rem;">Dual-tier cache wrapping any <code>Resolver</code> backend. Implements the <code>Resolver</code> interface (decorator pattern).</p>
+    <ul style="font-size:0.82rem;margin-top:0.5rem;">
+      <li><strong>L1 Turbo Cache</strong> — 4096 direct-mapped slots with per-slot <code>atomic_flag</code> spinlocks. FNV-1a hash. Reads are lock-free after acquire. <code>_mm_pause()</code> on spin.</li>
+      <li><strong>L2 LRU Cache</strong> — <code>unordered_map</code> with <code>shared_mutex</code> (readers-writer). Eviction by shortest remaining TTL when full (50k max).</li>
+      <li><strong>Stale-while-revalidate</strong> — Serves expired entries within stale threshold (configurable), refreshes via bounded deque (max 64) + single worker thread.</li>
+      <li><strong>Preemptive refresh</strong> — Background thread checks every 10s, refreshes entries when remaining TTL drops below <code>refreshThresholdPct</code> (AutoTuner-controlled).</li>
+      <li><strong>Adaptive prewarm</strong> — Every 60s, re-queries top-10 most-queried domains (tracked in <code>prewarmTracker_</code>).</li>
+      <li><strong>Dynamic TTL</strong> — Static atomics for minTTL (default 600s), negativeTTL (300s), staleThreshold (300s). AutoTuner adjusts up to 7200s.</li>
+      <li><strong>Disk persistence</strong> — Binary format with magic <code>0x4C594E58</code> ("LYNX"), versioned. Saved on shutdown, loaded on start.</li>
+      <li><strong>Error caching</strong> — Upstream failures cached as SERVFAIL with short TTL (negativeTTL/10, 30–60s).</li>
+    </ul>
+  </div>
+
+  <!-- HttpResolver -->
+  <div class="card">
+    <div class="card-header">
+      <div class="icon" style="background:rgba(240,136,62,0.15);color:var(--accent4);">HR</div>
+      HttpResolver
+      <span class="tag tag-orange">core</span>
+    </div>
+    <p style="font-size:0.85rem;margin-bottom:0.5rem;"><code>http_resolver.hpp/cpp</code> — 1,171 LOC (largest file)</p>
+    <p style="font-size:0.85rem;">Manages persistent HTTPS connections to DoH upstreams. Implements the <code>Resolver</code> interface.</p>
+    <ul style="font-size:0.82rem;margin-top:0.5rem;">
+      <li><strong>Connection pools</strong> — <code>deque&lt;UpstreamPool&gt;</code>. Each pool holds up to 128 connections with round-robin selection via <code>atomic&lt;int&gt;</code> nextConn.</li>
+      <li><strong>Multi-upstream racing</strong> — When fan-out enabled, takes one connection from each pool and runs exchanges via <code>std::async</code>. First to respond wins (150ms deadline, 10ms poll).</li>
+      <li><strong>Proxy auto-detection</strong> — Chain: <code>~/.lynx-proxy</code> file → <code>https_proxy</code> env → GNOME gsettings → direct. File change detected via <code>stat()</code> mtime (throttled to 1/sec).</li>
+      <li><strong>HTTP CONNECT tunneling</strong> — Full proxy CONNECT with 200 validation, TLS SNI, fallback to direct on failure.</li>
+      <li><strong>Proxy failure marking</strong> — Static <code>proxyFailed_</code> flag skips proxy on failure. All proxy connections drained on mark.</li>
+      <li><strong>Built-in DNS IPs</strong> — Hardcoded IPs for Google, Cloudflare, Quad9 to avoid DNS loop when lynx is the system resolver.</li>
+      <li><strong>Health-aware pool balancing</strong> — <code>maintain()</code> shrinks unhealthy pools (error ratio > 30%) and grows healthy ones (&lt; 5%).</li>
+      <li><strong>Connection warm-up</strong> — Async pool fill on startup with health-check exchange.</li>
+      <li><strong>Pre-built headers</strong> — HTTP header prefix cached per connection (avoids per-query allocation).</li>
+      <li><strong>Background futures</strong> — Async tasks tracked in <code>vector&lt;future&gt;</code>, reaped on each query.</li>
+    </ul>
+  </div>
+
+  <!-- ConnectionController -->
+  <div class="card">
+    <div class="card-header">
+      <div class="icon" style="background:rgba(248,81,73,0.15);color:var(--red);">CC</div>
+      ConnectionController
+      <span class="tag tag-red">infra</span>
+    </div>
+    <p style="font-size:0.85rem;margin-bottom:0.5rem;"><code>connection_controller.hpp/cpp</code> — 458 LOC</p>
+    <p style="font-size:0.85rem;">Background lifecycle manager for all HTTPS connections. Owns the health-check and reconnect machinery.</p>
+    <ul style="font-size:0.82rem;margin-top:0.5rem;">
+      <li><strong>Managed connections</strong> — Registry of <code>ManagedConn</code> structs tracking host, port, stream, connected flag, last use, failure count.</li>
+      <li><strong>Maintenance loop</strong> — Every 6s, checks all connections. Idle connections (> 3s unused, > 12s since last check) get health-checked.</li>
+      <li><strong>Health check</strong> — Sends a minimal DNS query over HTTP POST. Timeout: 2s. Resets failure count on success.</li>
+      <li><strong>Reconnect queue</strong> — Single worker thread processes <code>deque&lt;ReconnectWork&gt;</code>. 50ms sleep before reconnect attempt. <code>condition_variable</code> for wakeup.</li>
+      <li><strong>probeAllIdle()</strong> — Called by AutoTuner on high latency. Force-checks all idle connections.</li>
+      <li><strong>Atomic counters</strong> — <code>connectedCount_</code> and <code>TotalCount_</code> for instant utilization metrics.</li>
+    </ul>
+  </div>
+
+  <!-- AutoTuner -->
+  <div class="card">
+    <div class="card-header">
+      <div class="icon" style="background:rgba(210,153,34,0.15);color:var(--yellow);">AT</div>
+      AutoTuner
+      <span class="tag tag-yellow">intelligence</span>
+    </div>
+    <p style="font-size:0.85rem;margin-bottom:0.5rem;"><code>auto_tuner.hpp/cpp</code> — 536 LOC</p>
+    <p style="font-size:0.85rem;">Kalman-filtered PID controller that adapts the system in real-time. Runs every 3 seconds.</p>
+    <ul style="font-size:0.82rem;margin-top:0.5rem;">
+      <li><strong>Kalman filter</strong> — Smooths raw latency with process noise 0.01, measurement noise 5.0. Prevents over-reaction to spikes.</li>
+      <li><strong>PID controller</strong> — Kp=1.0, Ki=0.3, Kd=0.5. Anti-windup clamps integral to ±5. Output drives connection and thread growth decisions.</li>
+      <li><strong>Turbo scaling</strong> — When pending queue > 50 for 2+ cycles, aggressively adds up to 4 connections and 8 threads per cycle.</li>
+      <li><strong>Anomaly detection</strong> — Stuck queue (> 200 pending, 3+ cycles), error spike (> 3%, 2+ cycles), hit rate collapse (&lt; 50%). Triggers cooldown (6 cycles / ~30s).</li>
+      <li><strong>Connection management</strong> — Range 24–48. Grows on high utilization (> 90%), trend, errors. Shrinks on idle, proxy saturation.</li>
+      <li><strong>Thread management</strong> — Range 12–24. Turbo-aware. Tracks threads vs connections ratio (cap at 1.2x).</li>
+      <li><strong>Fan-out control</strong> — Enabled during boot, errors, high latency, variance. Disabled on stable low load after 24 samples.</li>
+      <li><strong>Cache TTL tuning</strong> — Increases minTTL/negativeTTL on high latency + low hit rate (up to 7200s). Decreases on low latency + high hit rate.</li>
+      <li><strong>PID damping</strong> — 10-second holdoff between connection count increases (reductions immediate).</li>
+    </ul>
+  </div>
+
+  <!-- LatencyManager -->
+  <div class="card">
+    <div class="card-header">
+      <div class="icon" style="background:rgba(210,153,34,0.15);color:var(--yellow);">LM</div>
+      LatencyManager
+      <span class="tag tag-yellow">intelligence</span>
+    </div>
+    <p style="font-size:0.85rem;margin-bottom:0.5rem;"><code>latency_manager.hpp/cpp</code> — 132 LOC</p>
+    <p style="font-size:0.85rem;">Urgency-driven controller that evaluates how far actual latency is from targets. Feeds into AutoTuner.</p>
+    <ul style="font-size:0.82rem;margin-top:0.5rem;">
+      <li><strong>Gap computation</strong> — Ratio of actual to target latency (both avg and P95). Smoothed with EWMA (0.7/0.3). Gap = max(avgRatio, p95Ratio).</li>
+      <li><strong>Urgency levels</strong> — 0 (on target) to 5 (gap > 10x). Consecutive-over boost (3+ → +1, 6+ → +1, capped at 5).</li>
+      <li><strong>Bottleneck detection</strong> — First-match: queue (load > 10) → cache (hit rate &lt; 50%) → upstream (conn util > 90%).</li>
+      <li><strong>Boost computation</strong> — Thread boost: urgency × 3 (queue), × 2 (upstream). Conn boost: urgency × 2 (upstream/cache). Cache refresh: 4–12% additive.</li>
+      <li><strong>Targets</strong> — Default: avg 50ms, P95 200ms. Configurable via <code>setTargets()</code>.</li>
+    </ul>
+  </div>
+
+  <!-- PerfMonitor -->
+  <div class="card">
+    <div class="card-header">
+      <div class="icon" style="background:rgba(121,192,255,0.15);color:var(--accent6);">PM</div>
+      PerfMonitor
+      <span class="tag tag-blue">telemetry</span>
+    </div>
+    <p style="font-size:0.85rem;margin-bottom:0.5rem;"><code>perf_monitor.hpp/cpp</code> — 138 LOC</p>
+    <p style="font-size:0.85rem;">Central telemetry hub. All subsystems record metrics here; AutoTuner and MonitorServer read from here.</p>
+    <ul style="font-size:0.82rem;margin-top:0.5rem;">
+      <li><strong>Latency ring buffer</strong> — 256-slot lock-free ring. <code>atomic&lt;uint64_t&gt;</code> per slot. Write index via <code>fetch_add</code>. Snapshot sorts for avg/P95.</li>
+      <li><strong>Atomic counters</strong> — cacheHits, cacheMisses, errors, queries. All <code>memory_order_relaxed</code>.</li>
+      <li><strong>Noise filter</strong> — Thread-local flag. Background queries (prewarm, refresh) marked as noise — excluded from user-visible stats.</li>
+      <li><strong>Per-domain latency</strong> — EWMA tracking per base domain (2-label extraction). Exported for dashboard.</li>
+      <li><strong>Supplementary stats</strong> — Callback function for CachingResolver to inject turbo/stale hit rates into snapshot.</li>
+      <li><strong>Error decay</strong> — <code>decayErrors()</code> halves the error counter each cycle (called by AutoTuner).</li>
+    </ul>
+  </div>
+
+  <!-- MonitorServer -->
+  <div class="card">
+    <div class="card-header">
+      <div class="icon" style="background:rgba(121,192,255,0.15);color:var(--accent6);">MS</div>
+      MonitorServer
+      <span class="tag tag-blue">telemetry</span>
+    </div>
+    <p style="font-size:0.85rem;margin-bottom:0.5rem;"><code>monitor_server.hpp/cpp</code></p>
+    <p style="font-size:0.85rem;">Built-in HTTP server for the monitoring dashboard, JSON API, and Prometheus metrics.</p>
+    <ul style="font-size:0.82rem;margin-top:0.5rem;">
+      <li><strong>Dashboard</strong> — Serves static files from <code>www/</code> directory. Logo served separately.</li>
+      <li><strong>/api/stats</strong> — Full PerfSnapshot as JSON (latency, cache rates, connections, threads, auto-tuner state).</li>
+      <li><strong>/metrics</strong> — Prometheus exposition format. Per-domain latency histograms.</li>
+      <li><strong>/health</strong> — Simple health check endpoint.</li>
+      <li><strong>Streaming</strong> — <code>handleStream()</code> for SSE/WebSocket support (future).</li>
+    </ul>
+  </div>
+
+  <!-- HttpsServer -->
+  <div class="card">
+    <div class="card-header">
+      <div class="icon" style="background:rgba(247,120,186,0.15);color:var(--accent5);">HS</div>
+      HttpsServer
+      <span class="tag tag-pink">optional</span>
+    </div>
+    <p style="font-size:0.85rem;margin-bottom:0.5rem;"><code>https_server.hpp/cpp</code> — 239 LOC</p>
+    <p style="font-size:0.85rem;">Reverse proxy: accepts DoH queries from clients (TLS or plain HTTP) and forwards to a local DNS upstream. Built on Boost.Beast.</p>
+    <ul style="font-size:0.82rem;margin-top:0.5rem;">
+      <li><strong>TLS + plain HTTP</strong> — Toggle via <code>--insecure_http_server</code>. TLS uses tlsv12_server with cert/key files.</li>
+      <li><strong>Endpoints</strong> — <code>/dns-query</code> and <code>/resolve</code> (POST only, <code>application/dns-message</code>).</li>
+      <li><strong>Per-connection thread</strong> — Each accepted connection spawns a detached thread (simple model, low-traffic path).</li>
+      <li><strong>DNS upstream</strong> — Forwards to configurable UDP DNS server (default 8.8.8.8:53).</li>
+    </ul>
+  </div>
+
+  <!-- DnsMessage / dns_protocol -->
+  <div class="card">
+    <div class="card-header">
+      <div class="icon" style="background:rgba(88,166,255,0.15);color:var(--accent);">DP</div>
+      dns_protocol
+      <span class="tag tag-blue">protocol</span>
+    </div>
+    <p style="font-size:0.85rem;margin-bottom:0.5rem;"><code>dns_protocol.hpp/cpp</code></p>
+    <p style="font-size:0.85rem;">DNS wire format parser and serializer. Everything DNS-related flows through this.</p>
+    <ul style="font-size:0.82rem;margin-top:0.5rem;">
+      <li><strong>Structs</strong> — <code>DnsHeader</code> (bitfield accessors), <code>DnsQuestion</code>, <code>DnsResourceRecord</code>, <code>DnsMessage</code>.</li>
+      <li><strong>Parse/Pack</strong> — Binary wire format round-trip. Handles compression pointers (jump count limit: 10).</li>
+      <li><strong>SSE4.2 acceleration</strong> — <code>dns_helpers::nameEquals()</code> processes 16 bytes at a time with <code>_mm_cmpeq_epi8</code>, <code>_mm_cmpeq_epi8</code> for case-insensitive compare. Falls back to scalar for tails &lt; 16 bytes.</li>
+      <li><strong>Factory methods</strong> — <code>createQuery()</code>, <code>createReply()</code>, <code>createError()</code>, <code>copy()</code>.</li>
+      <li><strong>Helpers</strong> — <code>wireToName()</code> (inline buffer), <code>nameToWire()</code>, <code>rdataToUint16/32()</code>.</li>
+    </ul>
+  </div>
+
+  <!-- Supporting files -->
+  <div class="card">
+    <div class="card-header">
+      <div class="icon" style="background:rgba(139,148,158,0.15);color:var(--text-dim);">··</div>
+      Supporting Modules
+      <span class="tag tag-blue">utility</span>
+    </div>
+    <p style="font-size:0.85rem;margin-bottom:0.5rem;">Small utility classes that round out the system.</p>
+    <ul style="font-size:0.82rem;margin-top:0.5rem;">
+      <li><strong>DomainMap</strong> (<code>domain_map.hpp/cpp</code>) — <code>std::map</code> with most-specific-match lookup. Used for per-domain upstream overrides.</li>
+      <li><strong>Logger</strong> (<code>logger.hpp</code>) — Singleton, header-only. Level filtering (Debug/Info/Warn/Error). Text or JSON format. Thread-safe via mutex.</li>
+      <li><strong>Resolver</strong> (<code>resolver.hpp</code>) — Abstract interface: <code>query()</code>, <code>peekCache()</code>, <code>init()</code>, <code>maintain()</code>, <code>reload()</code>, <code>countConnected()</code>.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2 id="classes">Class Relationships</h2>
+
+<div class="flow-container" style="overflow-x:auto;">
+<pre style="border:none;padding:0;margin:0;background:transparent;font-size:0.8rem;line-height:1.6;">
+<span style="color:var(--accent);">main.cpp</span>
+  │
+  ├── creates ──→ <span style="color:var(--accent2);">DnsServer</span>
+  │                  ├── owns ──→ <span style="color:var(--accent3);">Resolver</span> (shared_ptr)
+  │                  │              └── <span style="color:var(--accent3);">CachingResolver</span> <span style="color:var(--text-dim);">[decorator, wraps HttpResolver]</span>
+  │                  │                     ├── owns ──→ <span style="color:var(--accent4);">HttpResolver</span> <span style="color:var(--text-dim);">[inner Resolver]</span>
+  │                  │                     │              ├── owns ──→ <span style="color:var(--accent4);">UpstreamPool[]</span> <span style="color:var(--text-dim);">[deque of connection pools]</span>
+  │                  │                     │              │              └── owns ──→ <span style="color:var(--accent4);">Connection[]</span> <span style="color:var(--text-dim);">[shared_ptr, SSL streams]</span>
+  │                  │                     │              ├── owns ──→ <span style="color:var(--red);">ConnectionController</span>
+  │                  │                     │              │              └── owns ──→ <span style="color:var(--red);">ManagedConn[]</span> + <span style="color:var(--red);">ReconnectQueue</span>
+  │                  │                     │              └── uses ──→ <span style="color:var(--accent3);">asio::ssl::context</span>
+  │                  │                     ├── uses ──→ <span style="color:var(--yellow);">AutoTuner</span> <span style="color:var(--text-dim);">[singleton]</span>
+  │                  │                     └── uses ──→ <span style="color:var(--accent6);">PerfMonitor</span> <span style="color:var(--text-dim);">[singleton]</span>
+  │                  ├── owns ──→ <span style="color:var(--green);">ThreadPool</span> <span style="color:var(--text-dim);">[dnsPool, tcpPool]</span>
+  │                  └── uses ──→ <span style="color:var(--accent);">DomainMap</span>
+  │
+  ├── creates ──→ <span style="color:var(--accent5);">HttpsServer</span> <span style="color:var(--text-dim);">[optional, reverse proxy mode]</span>
+  │
+  ├── creates ──→ <span style="color:var(--accent6);">MonitorServer</span>
+  │                  └── reads ──→ <span style="color:var(--accent6);">PerfMonitor</span>
+  │
+  └── starts ───→ <span style="color:var(--yellow);">AutoTuner</span> <span style="color:var(--text-dim);">[singleton, runs tune() loop]</span>
+                     ├── reads ──→ <span style="color:var(--accent6);">PerfMonitor</span>
+                     ├── reads ──→ <span style="color:var(--yellow);">LatencyManager</span> <span style="color:var(--text-dim);">[singleton]</span>
+                     ├── writes → <span style="color:var(--accent3);">CachingResolver</span> <span style="color:var(--text-dim);">[static TTL controls]</span>
+                     └── writes → <span style="color:var(--green);">ThreadPool</span> <span style="color:var(--text-dim);">[resize via DnsServer]</span>
+</pre>
+</div>
+
+<h3>Interface Hierarchy</h3>
+<div style="display:flex;gap:1rem;flex-wrap:wrap;margin:0.5rem 0;">
+  <div class="class-box" style="flex:1;min-width:250px;">
+    <div class="class-name" style="color:var(--accent3);">Resolver</div>
+    <div class="class-detail">
+      <span class="inherits">Abstract interface</span><br>
+      <code>query(req, allowFanOut) → DnsMessagePtr</code><br>
+      <code>peekCache(req) → DnsMessagePtr</code><br>
+      <code>init() / maintain() / reload()</code><br>
+      <code>countConnected() → int</code>
+    </div>
+  </div>
+  <div class="class-box" style="flex:1;min-width:250px;">
+    <div class="class-name" style="color:var(--accent3);">CachingResolver : Resolver</div>
+    <div class="class-detail">
+      <span class="inherits">Decorates any Resolver</span><br>
+      <span class="owns">owns → unique_ptr&lt;Resolver&gt; back_</span><br>
+      Adds: L1 turbo, L2 LRU, stale-while-revalidate,<br>
+      preemptive refresh, adaptive prewarm, disk persistence
+    </div>
+  </div>
+  <div class="class-box" style="flex:1;min-width:250px;">
+    <div class="class-name" style="color:var(--accent4);">HttpResolver : Resolver</div>
+    <div class="class-detail">
+      <span class="inherits">Leaf resolver</span><br>
+      <span class="owns">owns → deque&lt;UpstreamPool&gt;</span><br>
+      <span class="owns">owns → ConnectionController</span><br>
+      <span class="owns">owns → ssl::context</span><br>
+      Adds: connection pooling, proxy, multi-upstream
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2 id="cache">Cache Subsystem — Dual-Tier Architecture</h2>
+
+<div class="grid grid-2">
+  <div class="card" style="border-color:var(--accent3);">
+    <h4 style="color:var(--accent3);">L1 Turbo Cache <span class="tag tag-purple">hot path</span></h4>
+    <table>
+      <tr><td>Slots</td><td>4,096 (power-of-2, mask-indexed)</td></tr>
+      <tr><td>Indexing</td><td>FNV-1a hash → <code>h &amp; (4096-1)</code></td></tr>
+      <tr><td>Locking</td><td>Per-slot <code>atomic_flag</code> spinlock with <code>_mm_pause()</code></td></tr>
+      <tr><td>Lookup</td><td>Compare <code>keyHash</code> atomic, check expiry</td></tr>
+      <tr><td>Eviction</td><td>Direct-mapped (oldest-wins on collision)</td></tr>
+      <tr><td>Populate</td><td>On L2 hit or fresh upstream response</td></tr>
+      <tr><td>Latency</td><td>~100ns (atomic load + compare)</td></tr>
+    </table>
+  </div>
+  <div class="card" style="border-color:var(--accent3);">
+    <h4 style="color:var(--accent3);">L2 LRU Cache <span class="tag tag-purple">main store</span></h4>
+    <table>
+      <tr><td>Structure</td><td><code>unordered_map&lt;CacheKey, CacheEntry&gt;</code></td></tr>
+      <tr><td>Locking</td><td><code>shared_mutex</code> (readers-writer)</td></tr>
+      <tr><td>Max size</td><td>50,000 entries</td></tr>
+      <tr><td>Eviction</td><td>Shortest remaining TTL when full</td></tr>
+      <tr><td>GC</td><td>Background thread every 30s removes expired</td></tr>
+      <tr><td>Stale</td><td>Expired entries served within staleThreshold, async refresh</td></tr>
+      <tr><td>Refresh</td><td>Bounded deque (64 max) + single worker thread</td></tr>
+    </table>
+  </div>
+</div>
+
+<h3>Cache Lookup Flow</h3>
+<div class="flow-container" style="font-size:0.82rem;">
+<pre style="border:none;padding:0;margin:0;background:transparent;">
+<span style="color:var(--accent3);">query(req)</span>
+  │
+  ├── 1. <span style="color:var(--accent3);">turboLookup(h)</span> ──→ <span style="color:var(--accent2);">HIT</span>: return buildCachedReply()     <span style="color:var(--text-dim);">[~100ns, lock-free]</span>
+  │
+  ├── 2. L2 <span style="color:var(--accent3);">cache_.find(key)</span> under shared_lock
+  │     ├── fresh ──→ <span style="color:var(--accent2);">HIT</span>: turboInsert(), return              <span style="color:var(--text-dim);">[populates L1 for next time]</span>
+  │     └── expired but within staleThreshold
+  │           ──→ <span style="color:var(--yellow);">STALE HIT</span>: turboInsert(60s), enqueue refresh, return
+  │
+  ├── 3. <span style="color:var(--text-dim);">MISS</span> → back_->query(req)
+  │     ├── success → shouldCache()? → computeCacheTTL()
+  │     │     → clobberTTL() → store in L2 + turboInsert()
+  │     └── failure → cache SERVFAIL with short TTL (30-60s)
+  │
+  └── Return reply
+</pre>
+</div>
+
+<h3>TTL Tuning Ranges</h3>
+<table>
+  <tr><th>Parameter</th><th>Default</th><th>Min</th><th>Max</th><th>Controlled By</th></tr>
+  <tr><td>minTTL</td><td>600s</td><td>300s</td><td>7,200s</td><td>AutoTuner (latency + hit rate)</td></tr>
+  <tr><td>negativeTTL</td><td>300s</td><td>60s</td><td>3,600s</td><td>AutoTuner (anomaly response)</td></tr>
+  <tr><td>staleThreshold</td><td>300s</td><td>60s</td><td>600s</td><td>Static</td></tr>
+  <tr><td>maxTTL</td><td colspan="2">7,200s</td><td>—</td><td>Hard cap</td></tr>
+  <tr><td>refreshThreshold</td><td>10%</td><td>5%</td><td>50%</td><td>AutoTuner (urgency-driven)</td></tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2 id="networking">Networking &amp; Connections</h2>
+
+<h3>Connection Pool Architecture</h3>
+<div class="flow-container" style="font-size:0.82rem;">
+<pre style="border:none;padding:0;margin:0;background:transparent;">
+<span style="color:var(--accent4);">HttpResolver</span>
+  │
+  ├── pools_[0] <span style="color:var(--text-dim);">[primary upstream: dns.google]</span>
+  │   ├── connections[0..N]  <span style="color:var(--text-dim);">[max 128/pool]</span>
+  │   │   ├── stream: <span style="color:var(--accent);">ssl::stream&lt;tcp::socket&gt;</span>
+  │   │   ├── connected: atomic&lt;bool&gt;
+  │   │   ├── inUse: atomic&lt;bool&gt;  <span style="color:var(--text-dim);">[exclusive use flag]</span>
+  │   │   ├── headerPrefix: string  <span style="color:var(--text-dim);">[pre-built HTTP header]</span>
+  │   │   └── poolRef → UpstreamPool
+  │   ├── errors / successes: atomic&lt;int&gt;  <span style="color:var(--text-dim);">[health tracking]</span>
+  │   └── growMutex
+  │
+  ├── pools_[1] <span style="color:var(--text-dim);">[secondary upstream: cloudflare-dns.com] (optional)</span>
+  │   └── (same structure)
+  │
+  └── connCtrl_: <span style="color:var(--red);">ConnectionController</span>
+      ├── managed_: vector&lt;ManagedConn&gt;  <span style="color:var(--text-dim);">[all registered connections]</span>
+      ├── reconnectQueue_: deque&lt;ReconnectWork&gt;
+      └── openFunc_: function&lt;bool(...)&gt;  <span style="color:var(--text-dim);">[callback to HttpResolver::openFunc]</span>
+</pre>
+</div>
+
+<h3>Query Execution Path (doPost)</h3>
+<div class="flow-container" style="font-size:0.82rem;">
+<pre style="border:none;padding:0;margin:0;background:transparent;">
+<span style="color:var(--accent4);">doPost(req, allowFanOut)</span>
+  │
+  ├── 1. ensurePoolSize() for each pool
+  │
+  ├── 2. If fanOut enabled → <span style="color:var(--accent5);">raceUpstreams(wire)</span>
+  │     ├── Take one conn from each pool (round-robin)
+  │     ├── Launch async exchange per conn
+  │     ├── Poll at 10ms intervals, 150ms deadline
+  │     └── First successful reply wins; wait for all to finish before releasing inUse
+  │
+  ├── 3. Retry loop (deadline: 400ms / 600ms proxy)
+  │     ├── getNextConnection() per pool (round-robin, skip disconnected/inUse)
+  │     ├── conn->exchange(wire)  <span style="color:var(--text-dim);">[HTTP POST with keep-alive]</span>
+  │     ├── success → notifyUsed(), return
+  │     └── failure → notifyFailure() → queue reconnect
+  │
+  ├── 4. No connected conns → sync reopen (1 per pool)
+  │     ├── conn->open()  <span style="color:var(--text-dim);">[proxy → direct fallback]</span>
+  │     ├── exchange(wire)
+  │     └── on success → openPoolAsync() to refill
+  │
+  └── 5. Return nullptr → CachingResolver tries fallback DNS
+</pre>
+</div>
+
+<h3>Proxy Detection Chain</h3>
+<table>
+  <tr><th>Priority</th><th>Source</th><th>Behavior</th></tr>
+  <tr><td>1 (highest)</td><td><code>~/.lynx-proxy</code></td><td>Written by NM dispatcher. Empty file = direct (no fallback).</td></tr>
+  <tr><td>2</td><td><code>https_proxy</code> env</td><td>Standard proxy env var. Checked: https_proxy, HTTPS_PROXY, http_proxy, HTTP_PROXY.</td></tr>
+  <tr><td>3</td><td>GNOME gsettings</td><td><code>org.gnome.system.proxy</code> via <code>gsettings</code> subprocess.</td></tr>
+  <tr><td>4</td><td>Direct</td><td>No proxy. Default behavior.</td></tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2 id="tuning">Auto-Tuning &amp; Latency Control</h2>
+
+<h3>Decision Matrix</h3>
+<table>
+  <tr><th>Condition</th><th>Conns</th><th>Threads</th><th>TTLs</th><th>Fan-out</th><th>Cooldown</th></tr>
+  <tr><td>Idle (load=0, 3+ cycles)</td><td>−2</td><td>−2</td><td>—</td><td>—</td><td>—</td></tr>
+  <tr><td>Stuck queue (> 200, 3+ cycles)</td><td>−2</td><td>−2</td><td>+120s</td><td>—</td><td>30s</td></tr>
+  <tr><td>Error spike (> 3%, 2+ cycles)</td><td>−1</td><td>—</td><td>—</td><td>enable</td><td>30s</td></tr>
+  <tr><td>Hit rate collapse (&lt; 50%)</td><td>—</td><td>—</td><td>+300s</td><td>—</td><td>—</td></tr>
+  <tr><td>Turbo (load > 50, 2+ cycles)</td><td>+4</td><td>+8</td><td>—</td><td>—</td><td>—</td></tr>
+  <tr><td>High util (> 90%) + high lat</td><td>+2–3</td><td>+2</td><td>—</td><td>enable</td><td>—</td></tr>
+  <tr><td>Rising trend + moderate util</td><td>+2</td><td>+1</td><td>—</td><td>enable</td><td>—</td></tr>
+  <tr><td>Proxy saturated</td><td>−1</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+  <tr><td>Stable low load (24+ samples)</td><td>—</td><td>—</td><td>−60s</td><td>disable</td><td>—</td></tr>
+  <tr><td>LM urgency boost</td><td>+u×2</td><td>+u×3</td><td>+4–12%</td><td>force on</td><td>—</td></tr>
+</table>
+
+<h3>Control Constants</h3>
+<table>
+  <tr><th>Constant</th><th>Value</th><th>Notes</th></tr>
+  <tr><td>CONN_RANGE</td><td>24–48</td><td>Adjustable by AutoTuner</td></tr>
+  <tr><td>THREAD_RANGE</td><td>12–24</td><td>Adjustable by AutoTuner</td></tr>
+  <tr><td>TUNE_INTERVAL</td><td>3s</td><td>30 × 100ms sleeps</td></tr>
+  <tr><td>KALMAN_PROCESS_NOISE</td><td>0.01</td><td>Lower = smoother</td></tr>
+  <tr><td>KALMAN_MEASUREMENT_NOISE</td><td>5.0</td><td>Higher = more trust in model</td></tr>
+  <tr><td>PID_KP / KI / KD</td><td>1.0 / 0.3 / 0.5</td><td>Proportional / integral / derivative</td></tr>
+  <tr><td>CONN_CHANGE_HOLDOFF</td><td>10s</td><td>Min time between connection increases</td></tr>
+  <tr><td>ANOMALY_COOLDOWN</td><td>6 cycles (~30s)</td><td>Prevents growth after anomaly</td></tr>
+  <tr><td>MAX_HISTORY</td><td>150 samples</td><td>5 minutes at 3s intervals</td></tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2 id="monitoring">Monitoring &amp; Observability</h2>
+
+<h3>PerfMonitor Snapshot Fields</h3>
+<table>
+  <tr><th>Field</th><th>Type</th><th>Source</th><th>Description</th></tr>
+  <tr><td>avgLatencyMs</td><td>double</td><td>Ring buffer (256)</td><td>Average DNS exchange latency in ms</td></tr>
+  <tr><td>p95LatencyMs</td><td>double</td><td>Ring buffer (256)</td><td>95th percentile latency</td></tr>
+  <tr><td>cacheHitRate</td><td>double</td><td>hits / (hits+misses)</td><td>Overall cache hit ratio</td></tr>
+  <tr><td>turboHitRate</td><td>double</td><td>CachingResolver callback</td><td>L1 turbo cache hit ratio</td></tr>
+  <tr><td>staleHitRate</td><td>double</td><td>CachingResolver callback</td><td>Stale-while-revalidate hit ratio</td></tr>
+  <tr><td>errorRate</td><td>double</td><td>errors / queries</td><td>Failed query ratio</td></tr>
+  <tr><td>connUtilization</td><td>double</td><td>activeConns / totalConns</td><td>Connection pool utilization (0.0–1.0)</td></tr>
+  <tr><td>activeConnections</td><td>int</td><td>ConnectionController</td><td>Currently connected count</td></tr>
+  <tr><td>threadPoolLoad</td><td>int</td><td>dnsPool.pending()</td><td>Queued tasks in thread pool</td></tr>
+  <tr><td>threadPoolWorkers</td><td>int</td><td>dnsPool.workerCount()</td><td>Active worker threads</td></tr>
+</table>
+
+<h3>Dashboard Endpoints</h3>
+<table>
+  <tr><th>Endpoint</th><th>Format</th><th>Description</th></tr>
+  <tr><td><code>/</code></td><td>HTML</td><td>Real-time dashboard with gauges</td></tr>
+  <tr><td><code>/api/stats</code></td><td>JSON</td><td>Full PerfSnapshot + auto-tuner state + pool stats</td></tr>
+  <tr><td><code>/metrics</code></td><td>Prometheus</td><td>Prometheus exposition format for Grafana integration</td></tr>
+  <tr><td><code>/health</code></td><td>Text</td><td>Simple health check</td></tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2 id="build">Build System</h2>
+
+<div class="grid grid-2">
+  <div class="card">
+    <h4>CMake Configuration</h4>
+    <pre>
+cmake_minimum_required(VERSION 3.15)
+project(lynx VERSION 0.2.0)
+set(CMAKE_CXX_STANDARD 17)
+
+# Dependencies
+find_package(Boost REQUIRED COMPONENTS system)
+find_package(OpenSSL REQUIRED)
+
+# Optional: io_uring
+check_include_file("linux/io_uring.h" HAS_IO_URING)
+
+# Optional: SSE4.2
+check_cxx_compiler_flag("-msse4.2" HAS_SSE42)
+
+# ASAN in debug builds
+if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")
+    target_compile_options(-fsanitize=address)
+endif()</pre>
+  </div>
+  <div class="card">
+    <h4>Build Presets</h4>
+    <table>
+      <tr><th>Preset</th><th>Type</th><th>Features</th></tr>
+      <tr><td><code>build-debug/</code></td><td>Debug</td><td>ASAN, symbols, no optimization</td></tr>
+      <tr><td><code>build-rel/</code></td><td>Release</td><td>Full optimization, no ASAN</td></tr>
+      <tr><td><code>build-rel2/</code></td><td>Release</td><td>Second release build</td></tr>
+    </table>
+    <h4 style="margin-top:1rem;">Build Commands</h4>
+    <pre>
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)</pre>
+    <h4 style="margin-top:1rem;">Link Libraries</h4>
+    <pre>
+Boost::system
+OpenSSL::SSL
+OpenSSL::Crypto
+pthread
+uring (optional)</pre>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2 id="tests">Test Suite</h2>
+
+<div class="card" style="max-width:700px;">
+  <h4>Integration Tests (Python)</h4>
+  <table>
+    <tr><th>Suite</th><th>Script</th><th>Coverage</th></tr>
+    <tr><td>Functional</td><td><code>functional.py</code></td><td>DNS resolution, A/AAAA records, caching, error handling</td></tr>
+    <tr><td>Performance</td><td><code>performance.py</code></td><td>QPS benchmarks, latency percentiles, throughput</td></tr>
+    <tr><td>Resilience</td><td><code>resilience.py</code></td><td>Upstream failures, proxy fallback, connection recovery</td></tr>
+  </table>
+  <p style="margin-top:0.5rem;font-size:0.82rem;color:var(--text-dim);">
+    Run: <code>cd tests && bash run.sh</code> — requires a running lynx instance.
+    Generates JSON + HTML reports.
+  </p>
+  <p style="margin-top:0.3rem;font-size:0.82rem;color:var(--text-dim);">
+    Additional: <code>dns_query.py</code> (raw DNS queries), <code>domains.txt</code> (test domains),
+    <code>report.py</code> (HTML report generator), <code>test_basic.py</code> (basic checks).
+  </p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2 id="config">Configuration</h2>
+
+<div class="grid grid-2">
+  <div class="card">
+    <h4>config.json</h4>
+    <pre>
+{
+  "dns_listen_addr": ":5353",
+  "enable_dns_to_https": true,
+  "enable_cache": true,
+  "cache_file": "/tmp/lynx-dns-cache.bin",
+  "log_level": "info",
+  "monitoring_listen_addr": "127.0.0.1:8085",
+  "https_upstream": "https://dns.google/dns-query",
+  "https_upstream2": "https://cloudflare-dns.com/dns-query"
+}</pre>
+  </div>
+  <div class="card">
+    <h4>CLI Flags</h4>
+    <table>
+      <tr><td><code>--config</code></td><td>JSON config file path</td></tr>
+      <tr><td><code>--dns_listen_addr</code></td><td>DNS listen (default: :53)</td></tr>
+      <tr><td><code>--enable_dns_to_https</code></td><td>Enable DNS→HTTPS proxy</td></tr>
+      <tr><td><code>--https_upstream</code></td><td>Primary DoH URL</td></tr>
+      <tr><td><code>--https_upstream2</code></td><td>Secondary DoH (racing)</td></tr>
+      <tr><td><code>--enable_cache</code></td><td>Enable response caching</td></tr>
+      <tr><td><code>--fallback_upstream</code></td><td>Plain DNS fallback</td></tr>
+      <tr><td><code>--proxy</code></td><td>HTTPS proxy URL</td></tr>
+      <tr><td><code>--monitoring_listen_addr</code></td><td>Dashboard address</td></tr>
+      <tr><td><code>--log_level</code></td><td>debug/info/warn/error</td></tr>
+      <tr><td><code>--enable_https_to_dns</code></td><td>Enable HTTPS→DNS gateway</td></tr>
+    </table>
+  </div>
+</div>
+
+<h3>Signal Handling</h3>
+<table>
+  <tr><th>Signal</th><th>Action</th></tr>
+  <tr><td><code>SIGINT</code> / <code>SIGTERM</code></td><td>Graceful drain (3s) → shutdown. Waits for in-flight queries.</td></tr>
+  <tr><td><code>SIGHUP</code></td><td>Reload proxy config from <code>~/.lynx-proxy</code> + env vars. Clears stale proxy state.</td></tr>
+</table>
+
+<hr class="section-divider">
+
+<p style="color:var(--text-dim);font-size:0.82rem;text-align:center;margin-top:2rem;">
+  Generated for Lynx DoH DNS v0.2.0 &middot; ~5,600 LOC &middot; C++17 &middot; MIT License
+</p>
+
+</body>
+</html>

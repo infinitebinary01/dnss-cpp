@@ -16,10 +16,11 @@
 #include <functional>
 #include <unordered_map>
 #include <chrono>
+#include <netdb.h>
 
 class ThreadPool {
 public:
-    ThreadPool(size_t n) : target_(n) {
+    ThreadPool(size_t n, size_t backpressureLimit = 300) : target_(n), backpressureLimit_(backpressureLimit) {
         for (size_t i = 0; i < n; ++i)
             spawnWorker();
     }
@@ -35,14 +36,14 @@ public:
     bool tryEnqueue(std::function<void()> f) {
         {
             std::lock_guard<std::mutex> lk(m_);
-            if (tasks_.size() >= BACKPRESSURE_LIMIT)
+            if (tasks_.size() >= backpressureLimit_)
                 return false;
             tasks_.push(std::move(f));
         }
         cv_.notify_one();
         return true;
     }
-    size_t maxPending() const { return BACKPRESSURE_LIMIT; }
+    size_t maxPending() const { return backpressureLimit_; }
     size_t pending() const {
         std::lock_guard<std::mutex> lk(m_);
         return tasks_.size();
@@ -128,20 +129,27 @@ private:
     std::atomic<bool> stop_{false};
     std::atomic<size_t> target_{8};
     std::atomic<size_t> liveCount_{0};
+    size_t backpressureLimit_;
     static constexpr size_t MIN_WORKERS = 4;
     static constexpr size_t MAX_WORKERS = 64;
-    static constexpr size_t BACKPRESSURE_LIMIT = 300;
 };
 
-static ThreadPool& dnsPool() {
-    static ThreadPool pool(12);
-    return pool;
-}
+    static ThreadPool& dnsPool() {
+        static ThreadPool pool(24);
+        return pool;
+    }
+
+    // Separate pool for TCP DoH resolution — prevents TCP from starving UDP
+    static ThreadPool& tcpPool() {
+        static ThreadPool pool(24, 512);
+        return pool;
+    }
 
 // Rate limiter — sharded token bucket per client IP (reduces mutex contention)
 class RateLimiter {
 public:
     bool allow(const std::string& ip) {
+        if (ip == "127.0.0.1" || ip == "::1") return true;
         size_t shard = fnv1a(ip) & (SHARDS - 1);
         auto& s = shards_[shard];
         auto now = std::chrono::steady_clock::now();
@@ -192,18 +200,28 @@ void DnsServer::tcpAcceptLoop() {
             break;
         }
         auto r = resolver_;
-        std::thread([sock = std::move(socket), r]() mutable {
+        auto sock = std::make_shared<tcp::socket>(std::move(socket));
+
+        std::vector<uint8_t> buf;
+        std::shared_ptr<DnsMessage> msg;
+        try {
+            sock->set_option(tcp::no_delay(true));
+            uint16_t net_len;
+            asio::read(*sock, asio::buffer(&net_len, 2));
+            uint16_t len = ntohs(net_len);
+            if (len < 12 || len > 65535) continue;
+            buf.resize(len);
+            asio::read(*sock, asio::buffer(buf));
+            msg = DnsMessage::parse(buf.data(), len);
+        } catch (const std::exception&) { continue; }
+        if (!msg || !msg->hasQuestions()) continue;
+
+        // All TCP queries go through pool to keep accept loop non-blocking.
+        // Pool worker checks peekCacheRaw first for fast cache-hit path.
+        if (!tcpPool().tryEnqueue([sock, r, msg, wireData = std::move(buf)]() mutable {
             try {
-                sock.set_option(tcp::no_delay(true));
-                uint16_t net_len;
-                asio::read(sock, asio::buffer(&net_len, 2));
-                uint16_t len = ntohs(net_len);
-                if (len < 12 || len > 65535) return;
-                std::vector<uint8_t> buf(len);
-                asio::read(sock, asio::buffer(buf));
-                auto msg = DnsMessage::parse(buf.data(), len);
-                if (!msg || !msg->hasQuestions()) return;
-                auto reply = r->query(*msg);
+                auto cached = r->peekCacheRaw(wireData.data(), wireData.size());
+                DnsMessagePtr reply = cached ? std::move(cached) : r->query(*msg);
                 if (!reply) {
                     reply = DnsMessage::createError(*msg, DnsRcode::ServFail);
                 }
@@ -212,9 +230,30 @@ void DnsServer::tcpAcceptLoop() {
                 std::vector<asio::const_buffer> bufs;
                 bufs.push_back(asio::buffer(&resp_len, 2));
                 bufs.push_back(asio::buffer(wire));
-                asio::write(sock, bufs);
+                asio::write(*sock, bufs);
+            } catch (const std::exception&) {
+                try {
+                    auto fail = DnsMessage::createError(*msg, DnsRcode::ServFail);
+                    auto wire = fail->pack();
+                    uint16_t resp_len = htons(wire.size());
+                    std::vector<asio::const_buffer> bufs;
+                    bufs.push_back(asio::buffer(&resp_len, 2));
+                    bufs.push_back(asio::buffer(wire));
+                    asio::write(*sock, bufs);
+                } catch (...) {}
+            }
+        })) {
+            // TCP pool saturated — SERVFAIL immediately
+            try {
+                auto errReply = DnsMessage::createError(*msg, DnsRcode::ServFail);
+                auto wire = errReply->pack();
+                uint16_t resp_len = htons(wire.size());
+                std::vector<asio::const_buffer> bufs;
+                bufs.push_back(asio::buffer(&resp_len, 2));
+                bufs.push_back(asio::buffer(wire));
+                asio::write(*sock, bufs);
             } catch (const std::exception&) {}
-        }).detach();
+        }
     }
 }
 
@@ -406,19 +445,44 @@ void DnsServer::udpWorker(int id, uint16_t port) {
             auto unq = unqUpstream_;
             auto sock = udpSocket_;
 
+            // Inline cache check for UDP — respond immediately for cached queries,
+            // bypassing thread pool overhead. Uses peekCacheRaw to avoid
+            // DnsMessage allocation on the hot path.
+            {
+                auto cached = res->peekCacheRaw(data->data(), data->size());
+                if (cached) {
+                    auto wire = cached->pack();
+                    sys::error_code sendEc;
+                    sock->send_to(asio::buffer(wire), remote, 0, sendEc);
+                    if (sendEc)
+                        LOG_ERROR("UDP worker inline send error: " + sendEc.message());
+                    continue;
+                }
+            }
+
             PerfMonitor::instance().recordDnsQuery();
             if (!dnsPool().tryEnqueue([data, remote, res, over, unq, sock]() {
                     handleQuery(data->data(), data->size(), remote, res, over, unq, sock);
                 })) {
+                // Backpressure: thread pool full. Try inline resolution as a last
+                // resort instead of returning SERVFAIL immediately. This handles
+                // burst traffic gracefully when the pool is saturated.
                 auto req = DnsMessage::parse(data->data(), data->size());
                 if (req) {
-                    auto reply = DnsMessage::createError(*req, DnsRcode::ServFail);
+                    DnsMessagePtr reply;
+                    try {
+                        reply = res->query(*req, false);
+                    } catch (...) {}
+                    if (!reply)
+                        reply = DnsMessage::createError(*req, DnsRcode::ServFail);
                     if (reply) {
                         auto wire = reply->pack();
                         sys::error_code sendEc;
                         sock->send_to(asio::buffer(wire), remote, 0, sendEc);
-                        if (sendEc) LOG_ERROR("UDP worker rejection send error: " + sendEc.message());
-                        PerfMonitor::instance().recordError();
+                        if (sendEc)
+                            LOG_ERROR("UDP worker backpressure send error: " + sendEc.message());
+                        if (!reply || reply->header.rcode() != 0)
+                            PerfMonitor::instance().recordError();
                     }
                 }
             }
@@ -459,24 +523,80 @@ void DnsServer::onUdpReceive(sys::error_code ec, size_t len) {
     auto sock = udpSocket_;
 
     PerfMonitor::instance().recordDnsQuery();
+
+    // Inline cache check for UDP — respond immediately for cached queries,
+    // bypassing thread pool overhead. Uses peekCacheRaw to avoid
+    // DnsMessage allocation on the hot path.
+    {
+        auto cached = resolver_->peekCacheRaw(data->data(), data->size());
+        if (cached) {
+            auto wire = std::make_shared<std::vector<uint8_t>>(cached->pack());
+            sock->async_send_to(asio::buffer(*wire), remote,
+                [wire](sys::error_code, size_t){});
+            startUdpReceive();
+            return;
+        }
+    }
+
     if (!dnsPool().tryEnqueue([data, remote, resolver, overrides, unqUpstream, sock]() {
             handleQuery(data->data(), data->size(), remote, resolver, overrides, unqUpstream, sock);
         })) {
+        // Backpressure: try inline resolution instead of SERVFAIL
         try {
             auto req = DnsMessage::parse(data->data(), data->size());
             if (req) {
-                auto reply = DnsMessage::createError(*req, DnsRcode::ServFail);
+                DnsMessagePtr reply;
+                try {
+                    reply = resolver->query(*req, false);
+                } catch (...) {}
+                if (!reply)
+                    reply = DnsMessage::createError(*req, DnsRcode::ServFail);
                 if (reply) {
                     auto wire = std::make_shared<std::vector<uint8_t>>(reply->pack());
                     sock->async_send_to(asio::buffer(*wire), remote,
                         [wire](sys::error_code, size_t){});
-                    PerfMonitor::instance().recordError();
+                    if (reply->header.rcode() != 0)
+                        PerfMonitor::instance().recordError();
                 }
             }
         } catch (const std::exception&) {}
     }
 
     startUdpReceive();
+}
+
+static DnsMessagePtr udpQueryRaw(const std::string& host, const std::string& port,
+                                  const std::vector<uint8_t>& wire, uint16_t origId) {
+    struct addrinfo hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+    struct addrinfo* res = nullptr;
+    int rc = getaddrinfo(host.c_str(), port.c_str(), &hints, &res);
+    if (rc != 0 || !res) return nullptr;
+
+    int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (fd < 0) { freeaddrinfo(res); return nullptr; }
+
+    struct timeval tv{};
+    tv.tv_sec = 2;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    ssize_t sent = sendto(fd, wire.data(), wire.size(), 0, res->ai_addr, res->ai_addrlen);
+    freeaddrinfo(res);
+    if (sent < 0) { close(fd); return nullptr; }
+
+    std::array<uint8_t, 4096> respBuf;
+    struct sockaddr_in from{};
+    socklen_t fromLen = sizeof(from);
+    ssize_t n = recvfrom(fd, respBuf.data(), respBuf.size(), 0, (struct sockaddr*)&from, &fromLen);
+    close(fd);
+    if (n < 12) return nullptr;
+
+    auto reply = DnsMessage::parse(respBuf.data(), n);
+    if (reply) reply->header.id = origId;
+    return reply;
 }
 
 void DnsServer::handleQuery(const uint8_t* data, size_t len,
@@ -515,23 +635,15 @@ void DnsServer::handleQuery(const uint8_t* data, size_t len,
             std::string overrideAddr;
             if (overrides.getMostSpecific(q.qname, overrideAddr)) {
                 try {
-                    asio::io_context ctx;
-                    asio::ip::udp::socket tmpSock(ctx);
-                    asio::ip::udp::resolver resolv(ctx);
                     auto colon = overrideAddr.find(':');
                     std::string ovHost = (colon != std::string::npos) ? overrideAddr.substr(0, colon) : overrideAddr;
                     std::string ovPort = (colon != std::string::npos) ? overrideAddr.substr(colon + 1) : "53";
-                    auto eps = resolv.resolve(ovHost, ovPort);
-                    tmpSock.open(asio::ip::udp::v4());
-                    timeval tv; tv.tv_sec = 2; tv.tv_usec = 0;
-                    setsockopt(tmpSock.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
                     auto wire = req->pack();
-                    tmpSock.send_to(asio::buffer(wire), *eps.begin());
-                    std::array<uint8_t, 4096> respBuf;
-                    asio::ip::udp::endpoint from;
-                    size_t n = tmpSock.receive_from(asio::buffer(respBuf), from);
-                    reply = DnsMessage::parse(respBuf.data(), n);
-                    if (reply) reply->header.id = req->header.id;
+                    reply = udpQueryRaw(ovHost, ovPort, wire, req->header.id);
+                    if (!reply) {
+                        reply = DnsMessage::createError(*req, DnsRcode::ServFail);
+                        PerfMonitor::instance().recordError();
+                    }
                 } catch (const std::exception& e) {
                     LOG_ERROR("[" + traceId + "] Override error: " + std::string(e.what()));
                     reply = DnsMessage::createError(*req, DnsRcode::ServFail);
@@ -544,23 +656,15 @@ void DnsServer::handleQuery(const uint8_t* data, size_t len,
                 bool isUnq = (dot == std::string::npos) || (nextDot == std::string::npos) || (dot == q.qname.size() - 1);
                 if (isUnq) {
                     try {
-                        asio::io_context ctx;
-                        asio::ip::udp::socket tmpSock(ctx);
-                        asio::ip::udp::resolver resolv(ctx);
                         auto colon = unqUpstream.find(':');
                         std::string uHost = (colon != std::string::npos) ? unqUpstream.substr(0, colon) : unqUpstream;
                         std::string uPort = (colon != std::string::npos) ? unqUpstream.substr(colon + 1) : "53";
-                        auto eps = resolv.resolve(uHost, uPort);
-                        tmpSock.open(asio::ip::udp::v4());
-                        timeval tv; tv.tv_sec = 2; tv.tv_usec = 0;
-                        setsockopt(tmpSock.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
                         auto wire = req->pack();
-                        tmpSock.send_to(asio::buffer(wire), *eps.begin());
-                        std::array<uint8_t, 4096> respBuf;
-                        asio::ip::udp::endpoint from;
-                        size_t n = tmpSock.receive_from(asio::buffer(respBuf), from);
-                        reply = DnsMessage::parse(respBuf.data(), n);
-                        if (reply) reply->header.id = req->header.id;
+                        reply = udpQueryRaw(uHost, uPort, wire, req->header.id);
+                        if (!reply) {
+                            reply = DnsMessage::createError(*req, DnsRcode::ServFail);
+                            PerfMonitor::instance().recordError();
+                        }
                     } catch (const std::exception& e) {
                         LOG_ERROR("[" + traceId + "] Unqualified upstream error: " + std::string(e.what()));
                         reply = DnsMessage::createError(*req, DnsRcode::ServFail);

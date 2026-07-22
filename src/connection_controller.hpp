@@ -34,7 +34,7 @@ public:
     // Register/unregister a connection for maintenance
     void manage(const std::string& host, const std::string& port,
                 const std::string& target,
-                asio::ssl::stream<asio::ip::tcp::socket>* stream,
+                std::shared_ptr<asio::ssl::stream<asio::ip::tcp::socket>> stream,
                 std::atomic<bool>* connected);
     void unmanage(asio::ssl::stream<asio::ip::tcp::socket>* stream);
 
@@ -60,7 +60,7 @@ private:
         std::string host;
         std::string port;
         std::string target;
-        asio::ssl::stream<asio::ip::tcp::socket>* stream = nullptr;
+        std::shared_ptr<asio::ssl::stream<asio::ip::tcp::socket>> stream;
         std::atomic<bool>* connected = nullptr;
         std::chrono::steady_clock::time_point lastUse;
         std::chrono::steady_clock::time_point lastCheck;
@@ -69,8 +69,9 @@ private:
     };
 
     struct ReconnectWork {
-        asio::ssl::stream<asio::ip::tcp::socket>* stream;
+        std::shared_ptr<asio::ssl::stream<asio::ip::tcp::socket>> stream;
         std::string host, port, target;
+        int retries = 0;
     };
 
     // Background maintenance loop
@@ -88,8 +89,9 @@ private:
     std::vector<ManagedConn> managed_;
     OpenFunc openFunc_;
 
-    // Single reconnect worker thread — avoids thread-per-failure storms
-    std::thread reconnectWorker_;
+    // Reconnect worker pool — processes queued reconnects in parallel
+    static constexpr int RECONNECT_WORKERS = 4;
+    std::vector<std::thread> reconnectWorkers_;
     std::mutex reconnectMutex_;
     std::condition_variable reconnectCv_;
     bool reconnectStop_ = false;

@@ -35,7 +35,7 @@
     sysUptime:   $('sys-uptime'),
     sysQueries:  $('sys-queries'),
     sysMode:     $('sys-mode'),
-    topDomains:  $('top-domains')
+    upstreamHealth: $('upstream-health')
   };
 
   function txt(id, val) { var el = dom[id]; if (el) el.textContent = val; }
@@ -183,15 +183,21 @@
     txt('sysQueries', totalQ.toLocaleString());
     txt('sysMode', 'DoH active');
 
-    if (d.top_domains && d.top_domains.length) {
+    var uh = d.upstream_health;
+    if (uh) {
       var html = '';
-      var top5 = d.top_domains.slice(0, 5);
-      for (var i = 0; i < top5.length; i++) {
-        var item = top5[i];
-        var c = item.latency < 100 ? 'good' : item.latency < 500 ? 'warn' : 'bad';
-        html += '<div class="stat-row"><span>' + item.domain + '</span><span class="' + c + '">' + item.latency.toFixed(1) + 'ms</span></div>';
+      if (uh.pools && uh.pools.length) {
+        for (var i = 0; i < uh.pools.length; i++) {
+          var p = uh.pools[i];
+          var connClass = p.connected > 0 ? 'good' : 'bad';
+          var errClass = p.error_ratio < 10 ? 'good' : p.error_ratio < 30 ? 'warn' : 'bad';
+          var label = p.host + ':' + p.port + (p.ip && p.ip != p.host ? ' (' + p.ip + ')' : '');
+          html += '<div class="stat-row" style="margin-top:6px"><span>' + label + '</span></div>';
+          html += '<div class="stat-row"><span>Connections</span><span class="' + connClass + '">' + p.connected + '/' + p.total + '</span></div>';
+          html += '<div class="stat-row"><span>Error Ratio</span><span class="' + errClass + '">' + p.error_ratio + '%</span></div>';
+        }
       }
-      if (dom.topDomains) dom.topDomains.innerHTML = html;
+      if (dom.upstreamHealth) dom.upstreamHealth.innerHTML = html;
     }
 
     updateChart(avg, p95);

@@ -43,7 +43,9 @@ void ConnectionController::start() {
     if (running_) return;
     running_ = true;
     thread_ = std::thread([this]() { run(); });
-    reconnectWorker_ = std::thread([this]() { reconnectLoop(); });
+    reconnectWorkers_.reserve(RECONNECT_WORKERS);
+    for (int i = 0; i < RECONNECT_WORKERS; ++i)
+        reconnectWorkers_.emplace_back([this]() { reconnectLoop(); });
 }
 
 void ConnectionController::stop() {
@@ -54,12 +56,13 @@ void ConnectionController::stop() {
         reconnectStop_ = true;
     }
     reconnectCv_.notify_all();
-    if (reconnectWorker_.joinable()) reconnectWorker_.join();
+    for (auto& w : reconnectWorkers_)
+        if (w.joinable()) w.join();
 }
 
 void ConnectionController::manage(const std::string& host, const std::string& port,
                                    const std::string& target,
-                                   asio::ssl::stream<asio::ip::tcp::socket>* stream,
+                                   std::shared_ptr<asio::ssl::stream<asio::ip::tcp::socket>> stream,
                                    std::atomic<bool>* connected) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto now = std::chrono::steady_clock::now();
@@ -73,25 +76,38 @@ void ConnectionController::manage(const std::string& host, const std::string& po
     mc.lastCheck = now;
     mc.failures = 0;
     mc.reconnectPending = false;
-    managed_.push_back(std::move(mc));
-    totalCount_.store(managed_.size());
     if (connected && connected->load()) {
         connectedCount_.fetch_add(1);
         boost::system::error_code ec;
         stream->next_layer().non_blocking(false, ec);
         enableTcpKeepAlive(stream->next_layer());
+        mc.lastUse = now;
     }
+    managed_.push_back(std::move(mc));
+    totalCount_.store(managed_.size());
 }
 
 void ConnectionController::unmanage(asio::ssl::stream<asio::ip::tcp::socket>* stream) {
     std::lock_guard<std::mutex> lock(mutex_);
     for (size_t i = 0; i < managed_.size(); ++i) {
-        if (managed_[i].stream == stream) {
+        if (managed_[i].stream.get() == stream) {
             if (managed_[i].connected && managed_[i].connected->load())
                 connectedCount_.fetch_sub(1);
             managed_.erase(managed_.begin() + i);
             totalCount_.store(managed_.size());
-            return;
+            break;
+        }
+    }
+    // Cancel any pending reconnect work for this stream to prevent
+    // reconnectLoop from using a dangling stream pointer.
+    {
+        std::lock_guard<std::mutex> rl(reconnectMutex_);
+        auto it = reconnectQueue_.begin();
+        while (it != reconnectQueue_.end()) {
+            if (it->stream.get() == stream)
+                it = reconnectQueue_.erase(it);
+            else
+                ++it;
         }
     }
 }
@@ -99,7 +115,7 @@ void ConnectionController::unmanage(asio::ssl::stream<asio::ip::tcp::socket>* st
 void ConnectionController::notifyUsed(asio::ssl::stream<asio::ip::tcp::socket>* stream) {
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& mc : managed_) {
-        if (mc.stream == stream) {
+        if (mc.stream.get() == stream) {
             mc.lastUse = std::chrono::steady_clock::now();
             mc.failures = 0;
             return;
@@ -111,14 +127,14 @@ void ConnectionController::notifyFailure(asio::ssl::stream<asio::ip::tcp::socket
     {
         std::lock_guard<std::mutex> lock(mutex_);
         for (size_t i = 0; i < managed_.size(); ++i) {
-            if (managed_[i].stream == stream) {
+            if (managed_[i].stream.get() == stream) {
                 managed_[i].failures++;
                 if (managed_[i].connected && managed_[i].connected->exchange(false))
                     connectedCount_.fetch_sub(1);
                 if (!managed_[i].reconnectPending) {
                     managed_[i].reconnectPending = true;
                     ReconnectWork work;
-                    work.stream = stream;
+                    work.stream = managed_[i].stream;
                     work.host = managed_[i].host;
                     work.port = managed_[i].port;
                     work.target = managed_[i].target;
@@ -137,7 +153,7 @@ void ConnectionController::notifyFailure(asio::ssl::stream<asio::ip::tcp::socket
 void ConnectionController::probeAllIdle() {
     struct Work {
         size_t idx;
-        asio::ssl::stream<asio::ip::tcp::socket>* stream;
+        std::shared_ptr<asio::ssl::stream<asio::ip::tcp::socket>> stream;
         ManagedConn snapshot;
     };
     std::vector<Work> toCheck;
@@ -199,7 +215,7 @@ void ConnectionController::run() {
 
         struct Work {
             size_t idx;
-            asio::ssl::stream<asio::ip::tcp::socket>* stream;
+            std::shared_ptr<asio::ssl::stream<asio::ip::tcp::socket>> stream;
             ManagedConn snapshot;
         };
         std::vector<Work> checks;
@@ -261,6 +277,7 @@ void ConnectionController::run() {
             std::lock_guard<std::mutex> lock(mutex_);
             if (idx < managed_.size()) {
                 auto& mc = managed_[idx];
+                LOG_INFO("[health] enqueuing reconnect for " + mc.host + ":" + mc.port);
                 ReconnectWork rw;
                 rw.stream = mc.stream;
                 rw.host = mc.host;
@@ -279,19 +296,8 @@ void ConnectionController::run() {
 // ---------- Health check ----------
 
 std::vector<uint8_t> ConnectionController::makeHealthQuery() {
-    static const std::vector<uint8_t> buf = []() {
-        std::vector<uint8_t> b(17, 0);
-        b[0] = 0x00; b[1] = 0x00;
-        b[2] = 0x01; b[3] = 0x00;
-        b[4] = 0x00; b[5] = 0x01;
-        b[8] = 0x00; b[9] = 0x00;
-        b[10] = 0x00; b[11] = 0x00;
-        b.push_back(0x00);
-        b.push_back(0x00); b.push_back(0x01);
-        b.push_back(0x00); b.push_back(0x01);
-        return b;
-    }();
-    return buf;
+    return {0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01};
 }
 
 bool ConnectionController::healthCheck(ManagedConn& mc) {
@@ -406,38 +412,67 @@ void ConnectionController::reconnectLoop() {
 // Reconnect by stream pointer — look up entry under lock, reconnect without lock,
 // then update state under lock. Inspired by notifyFailure's existing pattern.
 void ConnectionController::reconnectStream(ReconnectWork work) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    int delayMs = std::min(5 * (1 << std::min(work.retries, 6)), 5000);
+    std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
 
     ManagedConn snapshot;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         for (auto& mc : managed_) {
-            if (mc.stream == work.stream) {
-                if (!openFunc_ || !mc.connected) return;
-                boost::system::error_code ec;
-                mc.stream->next_layer().close(ec);
+            if (mc.stream.get() == work.stream.get()) {
+                if (!openFunc_ || !mc.connected) {
+                    LOG_INFO("[reconnect] SKIP: no func or null ptr");
+                    return;
+                }
+                if (mc.connected->load()) return;
                 snapshot = mc;
                 break;
             }
         }
     }
-    if (!snapshot.stream) return;
+    if (!snapshot.stream) {
+        LOG_INFO("[reconnect] SKIP: stream not found in managed_");
+        return;
+    }
 
-    boost::system::error_code ec;
-    bool ok = openFunc_(snapshot.host, snapshot.port, snapshot.target, *snapshot.stream, ec);
-    if (ok) enableTcpKeepAlive(snapshot.stream->next_layer());
+    boost::system::error_code closeEc;
+    snapshot.stream->next_layer().close(closeEc);
+
+    boost::system::error_code openEc;
+    bool ok = openFunc_(snapshot.host, snapshot.port, snapshot.target,
+                       *snapshot.stream, openEc);
+    if (ok) {
+        enableTcpKeepAlive(snapshot.stream->next_layer());
+    } else {
+        LOG_INFO("[reconnect] FAIL " + snapshot.host + ":" + snapshot.port +
+                 " ec=" + openEc.message() + " retry=" + std::to_string(work.retries));
+    }
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
         for (auto& mc : managed_) {
-            if (mc.stream == work.stream) {
-                mc.reconnectPending = false;
+            if (mc.stream.get() == work.stream.get()) {
                 if (ok && mc.connected) {
+                    mc.reconnectPending = false;
                     mc.connected->store(true);
                     connectedCount_.fetch_add(1);
                     mc.lastUse = std::chrono::steady_clock::now();
                     mc.lastCheck = std::chrono::steady_clock::now();
                     mc.failures = 0;
+                } else if (work.retries < 5) {
+                    ReconnectWork retry;
+                    retry.stream = work.stream;
+                    retry.host = work.host;
+                    retry.port = work.port;
+                    retry.target = work.target;
+                    retry.retries = work.retries + 1;
+                    {
+                        std::lock_guard<std::mutex> lk(reconnectMutex_);
+                        reconnectQueue_.push_back(std::move(retry));
+                    }
+                    reconnectCv_.notify_one();
+                } else {
+                    mc.reconnectPending = false;
                 }
                 return;
             }

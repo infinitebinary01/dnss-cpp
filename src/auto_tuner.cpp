@@ -2,9 +2,11 @@
 //
 #include "auto_tuner.hpp"
 #include "caching_resolver.hpp"
+#include "http_resolver.hpp"
 #include "latency_manager.hpp"
 #include "logger.hpp"
 #include <thread>
+
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -29,7 +31,7 @@ void AutoTuner::start() {
     tuneThread_ = std::thread([this]() {
         try {
             while (running_) {
-                for (int i = 0; i < 50 && running_; i++)
+                for (int i = 0; i < 30 && running_; i++)
                     std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 if (!running_) break;
                 tune();
@@ -97,9 +99,24 @@ void AutoTuner::tune() {
     auto perf = PerfMonitor::instance().snapshot();
     auto now = std::chrono::steady_clock::now();
 
+    // Decay error counter so GUI clears after the system recovers
+    PerfMonitor::instance().decayErrors();
+
     // LatencyManager evaluates gap to targets and computes urgency
     LatencyManager::instance().evaluate(perf);
     int latUrgency = LatencyManager::instance().urgencyLevel();
+
+    // When urgency spikes or stays elevated, proactively probe idle
+    // connections to detect dead upstream tunnels before queries hit them.
+    static int prevUrgency = 0;
+    static int probeCooldown = 0;
+    if (latUrgency >= 2 && (prevUrgency < 2 || probeCooldown <= 0)) {
+        if (auto* http = HttpResolver::instance())
+            http->probeIdleConnections();
+        probeCooldown = 3;  // Re-probe every 3 tune cycles (9s) if urgency persists
+    }
+    if (probeCooldown > 0) --probeCooldown;
+    prevUrgency = latUrgency;
 
     double rawLat = perf.avgLatencyMs;
     double err = perf.errorRate;
@@ -171,6 +188,24 @@ void AutoTuner::tune() {
     int load = perf.threadPoolLoad;
     bool anomalyHit = false;
 
+    // --- Idle recovery: pool empty for several cycles → scale down fast ---
+    bool idleRecovery = false;
+    if (load == 0 && consecutiveLowLoad_ >= 8) {
+        int curC = connCount_.load();
+        int curT = threadCount_.load();
+        int newC = std::max(curC - 1, MIN_CONNS);
+        int newT = std::max(curT - 1, MIN_THREADS);
+        if (newC != curC || newT != curT) {
+            connCount_.store(newC);
+            threadCount_.store(newT);
+            LOG_DEBUG("AI-Tuner: idle recovery — conns=" + std::to_string(newC) +
+                      " threads=" + std::to_string(newT));
+        }
+        integral_ *= 0.5;
+        prevLatency_ = lat;
+        idleRecovery = true;
+    }
+
     // Stuck queue: pending > 200 for 3+ cycles
     if (load > 200 && consecutiveHighLat_ >= 3) {
         int curT = threadCount_.load();
@@ -195,6 +230,7 @@ void AutoTuner::tune() {
     if (err > 0.03 && consecutiveHighErr_ >= 2) {
         int curC = connCount_.load();
         connCount_.store(std::max(curC - 1, MIN_CONNS));
+        lastConnChange_ = now;
         LOG_WARN("AI-Tuner: ANOMALY — error spike " + std::to_string(err) +
                  " cutting connections");
         consecutiveHighErr_ = 0;
@@ -202,19 +238,36 @@ void AutoTuner::tune() {
     }
 
     // Hit rate collapse: <50% after 60+ samples
+    // On low-bandwidth connections, cache more aggressively (up to 2h min, 1h negative)
     if (hitRate < 0.5 && samplesCollected_ > 60) {
         CachingResolver::setMinTTL(std::min(
-            CachingResolver::getMinTTL() + 300, 1800));
+            CachingResolver::getMinTTL() + 300, 7200));
         CachingResolver::setNegativeTTL(std::min(
-            CachingResolver::getNegativeTTL() + 120, 900));
+            CachingResolver::getNegativeTTL() + 120, 3600));
         LOG_WARN("AI-Tuner: ANOMALY — hit rate collapse to " +
-                 std::to_string(hitRate) + " increasing TTLs");
+                 std::to_string(hitRate) + " increasing TTLs up to 7200/3600s");
         anomalyHit = true;
     }
 
-    bool skipGrowth = anomalyHit;
+    // Latency-based TTL boost: high P95 (>target) with low hit rate → cache more
+    // (generic for any high-latency link — proxy, satellite, cellular, etc.)
+    if (!anomalyHit && hitRate < 0.7 && lat > 150 && samplesCollected_ > 30) {
+        int boost = static_cast<int>((lat - 50) * 2); // ~200ms→+300s, 300ms→+500s
+        int curMin = CachingResolver::getMinTTL();
+        if (curMin < 3600) {
+            CachingResolver::setMinTTL(std::min(curMin + boost, 7200));
+            CachingResolver::setNegativeTTL(std::min(
+                CachingResolver::getNegativeTTL() + 60, 3600));
+            LOG_WARN("AI-Tuner: latency=" + std::to_string(static_cast<int>(lat)) +
+                     "ms + low hitRate=" + std::to_string(static_cast<int>(hitRate*100)) +
+                     "% — boosting TTL by +" + std::to_string(boost) + "s");
+        }
+    }
+
+    bool skipGrowth = anomalyHit || idleRecovery;
     if (anomalyHit) {
         anomalyCooldown_ = 6; // prevent growth for ~30 seconds
+        lastConnChange_ = now; // also reset holdoff so growth doesn't rush back
     } else if (anomalyCooldown_ > 0) {
         anomalyCooldown_--;
         if (anomalyCooldown_ > 0) skipGrowth = true;
@@ -323,6 +376,11 @@ void AutoTuner::tune() {
             newConn = boosted;
         }
     }
+    // PID damping: only apply growth if holdoff elapsed; allow reductions immediately
+    if (newConn > curConn && (now - lastConnChange_) < CONN_CHANGE_HOLDOFF) {
+        newConn = curConn; // suppress growth during holdoff
+    }
+    if (newConn != curConn) lastConnChange_ = now;
     connCount_.store(newConn);
 
     // --- Fan-out ---
@@ -402,7 +460,7 @@ void AutoTuner::tune() {
             LOG_DEBUG("AI-Tuner: -" + std::to_string(curThreads - newThreads) +
                       " threads (" + std::to_string(newThreads) + ") — excess vs connections");
         } else if (util < 0.7) {
-            if (load == 0 && consecutiveLowLoad_ >= 3 && curThreads > MIN_THREADS) {
+            if (load == 0 && consecutiveLowLoad_ >= 8 && curThreads > MIN_THREADS) {
                 newThreads = curThreads - 1;
                 LOG_DEBUG("AI-Tuner: -1 thread (" + std::to_string(newThreads) + ") — idle");
             } else if (load < 3 && consecutiveLowLoad_ >= 12 && curThreads > MIN_THREADS) {

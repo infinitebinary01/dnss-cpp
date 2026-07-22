@@ -1,5 +1,8 @@
 # Build output
 build/
+build-debug/
+build-rel/
+build-rel2/
 *.o
 *.obj
 *.a
@@ -34,6 +37,14 @@ dnss.log
 
 # Config
 config.json
+
+# Python
+__pycache__/
+*.pyc
+
+# Test reports
+tests/test-report.json
+tests/test-report.html
 
 # Misc
 a.out

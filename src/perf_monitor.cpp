@@ -66,6 +66,14 @@ void PerfMonitor::recordError() {
     counters_.errors_.fetch_add(1, std::memory_order_relaxed);
 }
 
+void PerfMonitor::decayErrors() {
+    int64_t cur = counters_.errors_.load(std::memory_order_relaxed);
+    if (cur > 0) {
+        int64_t decayed = cur / 2;
+        counters_.errors_.store(decayed, std::memory_order_relaxed);
+    }
+}
+
 void PerfMonitor::recordConnUse(int active, int total) {
     activeConns_.store(active, std::memory_order_relaxed);
     totalConns_.store(total, std::memory_order_relaxed);

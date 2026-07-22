@@ -15,6 +15,7 @@
 #include <future>
 #include <atomic>
 #include <thread>
+#include <shared_mutex>
 
 namespace asio = boost::asio;
 
@@ -32,19 +33,21 @@ public:
     DnsMessagePtr query(const DnsMessage& req, bool allowFanOut = true) override;
 
     int countConnected() const;
+    bool useProxy() const { return useProxy_.load(); }
 
 private:
     struct UpstreamPool;
 
     struct Connection {
         asio::io_context ctx;
-        std::unique_ptr<asio::ssl::stream<asio::ip::tcp::socket>> stream;
+        std::shared_ptr<asio::ssl::stream<asio::ip::tcp::socket>> stream;
         std::atomic<bool> connected{false};
         std::atomic<bool> inUse{false};
         std::string host;
         std::string port;
         std::string target;
         std::string headerPrefix; // pre-built HTTP header (without Content-Length)
+        std::string remoteAddr;
         UpstreamPool* poolRef{nullptr};
         ConnectionController* connCtrl{nullptr};
 
@@ -60,7 +63,7 @@ private:
         std::string host;
         std::string port;
         std::string target;
-        std::vector<std::unique_ptr<Connection>> connections;
+        std::vector<std::shared_ptr<Connection>> connections;
         std::mutex growMutex;
         std::atomic<int> nextConn{0};
 
@@ -79,9 +82,9 @@ private:
     DnsMessagePtr doFallback(const DnsMessage& req);
 
     void ensurePoolSize(UpstreamPool& pool, size_t target);
-    Connection* getNextConnection(UpstreamPool& pool);
+    std::shared_ptr<Connection> getNextConnection(UpstreamPool& pool);
 
-    void openConnectionAsync(Connection* conn);
+    void openConnectionAsync(std::shared_ptr<Connection> conn);
     void openPoolAsync(UpstreamPool& pool);
     void warmUp();
     static void enableTcpKeepalive(asio::ip::tcp::socket& socket);
@@ -97,15 +100,46 @@ private:
     mutable std::mutex configMutex_;
     std::string proxy_;
     std::string noProxy_;
-    bool useProxy_ = false;
+    std::atomic<bool> useProxy_{false};
     std::string proxyHost_;
     std::string proxyPort_;
+
+    std::string proxyFilePath_;
+    std::atomic<std::time_t> proxyFileMtime_{0};
+
+public:
+    static HttpResolver* instance_;
+
+    struct PoolStats {
+        std::string host;
+        std::string port;
+        std::string remoteAddr;
+        int connected = 0;
+        int total = 0;
+        int errors = 0;
+        int successes = 0;
+        int errorRatio = 0;
+    };
+
+    static HttpResolver* instance() { return instance_; }
+    std::string getProxyUrl() const;
+    std::vector<PoolStats> getPoolStats() const;
+    void probeIdleConnections() { connCtrl_.probeAllIdle(); }
+
+private:
 
     asio::ssl::context sslCtx_{asio::ssl::context::tlsv12_client};
 
     std::atomic<bool> warmStarted_{false};
     std::thread warmThread_;
     std::atomic<bool> running_{false};
+
+    // Background async tasks (replaces detached threads for safety)
+    std::mutex futuresMutex_;
+    std::vector<std::future<void>> asyncFutures_;
+    void reapFutures();
+
+    static std::atomic<bool> proxyFailed_;
 
     ConnectionController connCtrl_;
 

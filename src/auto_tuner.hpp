@@ -32,8 +32,8 @@ public:
 private:
     AutoTuner() = default;
 
-    std::atomic<int> connCount_{16};
-    std::atomic<int> threadCount_{12};
+    std::atomic<int> connCount_{32};
+    std::atomic<int> threadCount_{20};
     std::atomic<int> refreshPct_{10};
     std::atomic<bool> fanOut_{true};
 
@@ -64,16 +64,20 @@ private:
     int samplesCollected_ = 0;
 
     static constexpr size_t MAX_HISTORY = 150; // 5 min at 2s intervals
-    static constexpr int MIN_CONNS = 16;
-    static constexpr int MAX_CONNS = 32;
-    static constexpr int MIN_THREADS = 12;
-    static constexpr int MAX_THREADS = 24;
+    static constexpr int MIN_CONNS = 24;
+    static constexpr int MAX_CONNS = 48;
+    static constexpr int MIN_THREADS = 16;
+    static constexpr int MAX_THREADS = 32;
 
     // Turbo threader state
     int turboCycles_ = 0;
 
     // Anomaly cooldown: after a cut, prevent growth for N cycles
     int anomalyCooldown_ = 0;
+
+    // PID damping: minimum time between connection count changes
+    TimePoint lastConnChange_{};
+    static constexpr auto CONN_CHANGE_HOLDOFF = std::chrono::seconds(15);
 
     double computeTrend();
     double computeVariance();

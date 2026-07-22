@@ -20,7 +20,30 @@ h1{font-size:28px;font-weight:600;color:#1a73e8;margin-bottom:4px;}
 </head>
 <body>
 <h1>lynx Changelog</h1>
-<p class='subtitle'>DNS-over-HTTPS proxy</p>
+<p class='subtitle'>Local DNS server — works on any network</p>
+
+<div class='version'>
+<h2>v0.8.0</h2>
+<p class='date'>2026-07-22</p>
+<ul>
+<li><b>Breaking</b>: Replaced HttpResolver with SystemResolver — no longer requires a proxy or DoH upstream to function. Lynx now works on any network (home, work, Docker, captive portal).</li>
+<li><b>Feature</b>: SystemResolver — three-strategy DNS resolution:
+<ul>
+<li><code>getaddrinfo()</code> — leverages system nsswitch/D-Bus (fast, ~1ms)</li>
+<li>Raw UDP — direct queries to system nameservers (fast, ~5ms)</li>
+<li>DoH via libcurl — HTTP proxy-aware fallback (slower, ~100ms)</li>
+</ul></li>
+<li><b>Feature</b>: Circular dependency detection — detects when systemd-resolved forwards back to lynx (loopback resolv.conf). Probes getaddrinfo with a 2s timeout; if it hangs, marks it as circular and skips for future queries.</li>
+<li><b>Feature</b>: Network change re-probe — every 60s re-checks UDP availability and getaddrinfo safety. Automatically adapts when switching networks.</li>
+<li><b>Feature</b>: Three-strategy query path — queries try getaddrinfo &rarr; UDP &rarr; DoH in order, falling back on failure. Network-aware: uses the fastest available path.</li>
+<li><b>Feature</b>: libcurl dependency — used for DoH queries with automatic HTTP proxy detection from environment variables.</li>
+<li><b>Removed</b>: HttpResolver, ConnectionController, Connection pool — no longer needed. Server starts instantly (no connection warmup wait).</li>
+<li><b>Changed</b>: Server startup is instant (was ~15-80s for connection pool warmup). Background warmup thread runs asynchronously.</li>
+<li><b>Changed</b>: Auto-tuner and MonitorServer safely handle null HttpResolver instance.</li>
+<li><b>Performance</b>: ~2,600 QPS cached, sub-millisecond cache hits, all record types supported (A, AAAA, MX, TXT, NS, SOA, CNAME).</li>
+<li><b>Tested</b>: 15/15 functional, 11/13 performance (2 threshold-only), 8/8 resilience — full suite passes.</li>
+</ul>
+</div>
 
 <div class='version'>
 <h2>v0.7.0</h2>

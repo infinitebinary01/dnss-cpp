@@ -5,6 +5,7 @@
 #include "auto_tuner.hpp"
 #include "latency_manager.hpp"
 #include "caching_resolver.hpp"
+#include "http_resolver.hpp"
 #include "logger.hpp"
 
 #include <sstream>
@@ -345,25 +346,29 @@ std::string MonitorServer::renderJson() {
         << "\"min_ttl_secs\":" << CachingResolver::getMinTTL() << ","
         << "\"negative_ttl_secs\":" << CachingResolver::getNegativeTTL()
       << "},"
-      << "\"top_domains\":[";
+      << "\"upstream_health\":{"
+        << "\"pools\":[";
 
-    auto domains = PerfMonitor::instance().getDomainLatencies();
-    std::vector<std::pair<std::string, double>> sorted;
-    for (auto& [name, dl] : domains) {
-        sorted.push_back({name, dl.p95});
+    if (HttpResolver::instance()) {
+        auto pools = HttpResolver::instance()->getPoolStats();
+        bool first = true;
+        for (auto& ps : pools) {
+            if (!first) j << ",";
+            first = false;
+            j << "{"
+              << "\"host\":\"" << ps.host << "\","
+              << "\"port\":\"" << ps.port << "\","
+              << "\"ip\":\"" << ps.remoteAddr << "\","
+              << "\"connected\":" << ps.connected << ","
+              << "\"total\":" << ps.total << ","
+              << "\"err\":" << ps.errors << ","
+              << "\"ok\":" << ps.successes << ","
+              << "\"error_ratio\":" << ps.errorRatio
+              << "}";
+        }
     }
-    std::sort(sorted.begin(), sorted.end(),
-              [](auto& a, auto& b) { return a.second > b.second; });
 
-    bool first = true;
-    for (int i = 0; i < std::min(10, (int)sorted.size()); i++) {
-        if (!first) j << ",";
-        first = false;
-        j << "{\"domain\":\"" << sorted[i].first
-          << "\",\"latency\":" << sorted[i].second << "}";
-    }
-
-    j << "]}";
+    j << "]}}";
     return j.str();
 }
 

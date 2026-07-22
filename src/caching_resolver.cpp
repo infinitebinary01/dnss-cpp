@@ -30,6 +30,9 @@ CachingResolver::CachingResolver(std::unique_ptr<Resolver> back)
 
 CachingResolver::~CachingResolver() {
     running_ = false;
+    staleRefreshCv_.notify_all();
+    if (staleRefreshWorker_.joinable()) staleRefreshWorker_.join();
+    if (warmupThread_.joinable()) warmupThread_.join();
     if (maintainThread_.joinable()) maintainThread_.join();
     if (refreshThread_.joinable()) refreshThread_.join();
     if (adaptivePrewarmThread_.joinable()) adaptivePrewarmThread_.join();
@@ -190,9 +193,25 @@ void CachingResolver::warmupCache() {
 
 void CachingResolver::init() {
     back_->init();
+    // Start stale-refresh worker thread
+    staleRefreshWorker_ = std::thread([this]() {
+        while (running_) {
+            StaleRefreshWork work;
+            {
+                std::unique_lock lock(staleRefreshMutex_);
+                staleRefreshCv_.wait(lock, [this] {
+                    return !running_ || !staleRefreshQueue_.empty();
+                });
+                if (!running_ && staleRefreshQueue_.empty()) return;
+                if (staleRefreshQueue_.empty()) continue;
+                work = std::move(staleRefreshQueue_.front());
+                staleRefreshQueue_.pop_front();
+            }
+            refreshEntry(work.key, work.question);
+        }
+    });
     // Warmup runs async so the DNS server starts immediately.
-    // On hotspot this can take 80+s; don't block startup for it.
-    std::thread([this]() { warmupCache(); }).detach();
+    warmupThread_ = std::thread([this]() { warmupCache(); });
 }
 
 void CachingResolver::reload() {
@@ -357,9 +376,14 @@ DnsMessagePtr CachingResolver::query(const DnsMessage& req, bool allowFanOut) {
         staleHits_++;
         PerfMonitor::instance().recordCacheHit();
         turboInsert(h, staleMsg, std::chrono::steady_clock::now() + std::chrono::seconds(60));
-        std::thread([this, key, q = DnsQuestion{q.qname, q.qtype, q.qclass}]() {
-            refreshEntry(key, q);
-        }).detach();
+        // Enqueue stale refresh to bounded worker instead of spawning detached thread
+        {
+            std::lock_guard lock(staleRefreshMutex_);
+            if (staleRefreshQueue_.size() < MAX_STALE_REFRESH_QUEUE) {
+                staleRefreshQueue_.push_back({key, DnsQuestion{q.qname, q.qtype, q.qclass}});
+                staleRefreshCv_.notify_one();
+            }
+        }
         LOG_DEBUG("stale-while-revalidate: " + q.qname);
         return buildCachedReply(req, *staleMsg);
     }
@@ -433,6 +457,164 @@ DnsMessagePtr CachingResolver::query(const DnsMessage& req, bool allowFanOut) {
     }
 
     return reply;
+}
+
+DnsMessagePtr CachingResolver::peekCache(const DnsMessage& req) {
+    if (req.questions.size() != 1) return nullptr;
+    const auto& q = req.questions[0];
+    CacheKey key{q.qname, q.qtype, q.qclass};
+    uint64_t h = turboHash(key);
+
+    // L1 turbo (lock-free)
+    {
+        DnsMessagePtr turboMsg;
+        if (turboLookup(h, turboMsg)) {
+            totalQueries_++;
+            cacheHits_++;
+            turboHits_++;
+            PerfMonitor::instance().recordDnsQuery();
+            PerfMonitor::instance().recordCacheHit();
+            return buildCachedReply(req, *turboMsg);
+        }
+    }
+
+    // L2 main cache
+    {
+        std::shared_lock lock(cacheMutex_);
+        auto it = cache_.find(key);
+        if (it != cache_.end() && it->second.msg) {
+            if (!isExpired(it->second)) {
+                totalQueries_++;
+                cacheHits_++;
+                PerfMonitor::instance().recordDnsQuery();
+                PerfMonitor::instance().recordCacheHit();
+                return buildCachedReply(req, *it->second.msg);
+            }
+            auto staleLimit = it->second.expiresAt +
+                std::chrono::seconds(staleThresholdSecs.load());
+            if (std::chrono::steady_clock::now() < staleLimit) {
+                totalQueries_++;
+                cacheHits_++;
+                staleHits_++;
+                PerfMonitor::instance().recordDnsQuery();
+                PerfMonitor::instance().recordCacheHit();
+                return buildCachedReply(req, *it->second.msg);
+            }
+        }
+    }
+    // Cache miss — let it fall through to thread pool for full query path
+    return nullptr;
+}
+
+DnsMessagePtr CachingResolver::peekCacheRaw(const uint8_t* data, size_t len) {
+    if (len < 12) return nullptr;
+    uint16_t qdcount = (data[4] << 8) | data[5];
+    if (qdcount == 0) return nullptr;
+
+    // Parse question section directly from wire — no DnsMessage allocation
+    const uint8_t* p = data + 12;
+    const uint8_t* end = data + len;
+
+    // Parse qname
+    std::string qname;
+    qname.reserve(64);
+    while (p < end && *p != 0) {
+        if ((*p & 0xC0) == 0xC0) break; // compression pointer — stop
+        uint8_t labelLen = *p++;
+        if (p + labelLen > end) return nullptr;
+        if (!qname.empty()) qname.push_back('.');
+        qname.append(reinterpret_cast<const char*>(p), labelLen);
+        p += labelLen;
+    }
+    if (p >= end) return nullptr;
+    ++p; // skip null terminator
+    if (p + 4 > end) return nullptr;
+    uint16_t qtype = (p[0] << 8) | p[1];
+    uint16_t qclass = (p[2] << 8) | p[3];
+
+    CacheKey key{std::move(qname), qtype, qclass};
+    uint64_t h = turboHash(key);
+
+    // L1 turbo lookup (lock-free)
+    {
+        DnsMessagePtr turboMsg;
+        if (turboLookup(h, turboMsg)) {
+            totalQueries_++;
+            cacheHits_++;
+            turboHits_++;
+            PerfMonitor::instance().recordDnsQuery();
+            PerfMonitor::instance().recordCacheHit();
+            // Build a minimal reply — we need the original query to set the ID.
+            // Since we only have raw bytes, construct the reply directly.
+            auto reply = std::make_shared<DnsMessage>();
+            reply->header.id = (data[0] << 8) | data[1];
+            reply->header.flags = 0x8180; // standard response, recursion desired, recursion available
+            reply->header.qdcount = 1;
+            reply->header.ancount = static_cast<uint16_t>(turboMsg->answers.size());
+            reply->questions = turboMsg->questions;
+            reply->answers = turboMsg->answers;
+            reply->header.nscount = static_cast<uint16_t>(turboMsg->authorities.size());
+            reply->authorities = turboMsg->authorities;
+            reply->header.arcount = static_cast<uint16_t>(turboMsg->additionals.size());
+            reply->additionals = turboMsg->additionals;
+            return reply;
+        }
+    }
+
+    // L2 main cache
+    {
+        std::shared_lock lock(cacheMutex_);
+        auto it = cache_.find(key);
+        if (it != cache_.end() && it->second.msg) {
+            if (!isExpired(it->second)) {
+                totalQueries_++;
+                cacheHits_++;
+                PerfMonitor::instance().recordDnsQuery();
+                PerfMonitor::instance().recordCacheHit();
+                turboInsert(h, it->second.msg, it->second.expiresAt);
+                auto reply = std::make_shared<DnsMessage>();
+                reply->header.id = (data[0] << 8) | data[1];
+                reply->header.flags = 0x8180;
+                reply->header.qdcount = 1;
+                reply->header.ancount = static_cast<uint16_t>(it->second.msg->answers.size());
+                reply->questions = it->second.msg->questions;
+                reply->answers = it->second.msg->answers;
+                reply->header.nscount = static_cast<uint16_t>(it->second.msg->authorities.size());
+                reply->authorities = it->second.msg->authorities;
+                reply->header.arcount = static_cast<uint16_t>(it->second.msg->additionals.size());
+                reply->additionals = it->second.msg->additionals;
+                return reply;
+            }
+            // Stale check
+            auto staleLimit = it->second.expiresAt +
+                std::chrono::seconds(staleThresholdSecs.load());
+            if (std::chrono::steady_clock::now() < staleLimit) {
+                totalQueries_++;
+                cacheHits_++;
+                staleHits_++;
+                PerfMonitor::instance().recordDnsQuery();
+                PerfMonitor::instance().recordCacheHit();
+                auto staleMsg = it->second.msg->copy();
+                turboInsert(h, staleMsg, std::chrono::steady_clock::now() + std::chrono::seconds(60));
+                {
+                    std::lock_guard lock2(staleRefreshMutex_);
+                    if (staleRefreshQueue_.size() < MAX_STALE_REFRESH_QUEUE) {
+                        staleRefreshQueue_.push_back({key, DnsQuestion{key.name, key.type, key.qclass}});
+                        staleRefreshCv_.notify_one();
+                    }
+                }
+                auto reply = std::make_shared<DnsMessage>();
+                reply->header.id = (data[0] << 8) | data[1];
+                reply->header.flags = 0x8180;
+                reply->header.qdcount = 1;
+                reply->header.ancount = static_cast<uint16_t>(staleMsg->answers.size());
+                reply->questions = staleMsg->questions;
+                reply->answers = staleMsg->answers;
+                return reply;
+            }
+        }
+    }
+    return nullptr;
 }
 
 bool CachingResolver::shouldCache(const DnsQuestion& question, const DnsMessage& reply) {
