@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Lynx DoH DNS — Project Map</title>
+<title>Lynx DNS — Project Map</title>
 <style>
   :root {
     --bg: #0d1117;
@@ -231,8 +231,8 @@
 </head>
 <body>
 
-<h1>Lynx DoH DNS — Project Map</h1>
-<p class="subtitle">C++17 DNS-over-HTTPS proxy daemon &middot; v0.2.0 &middot; ~5,600 LOC across 14 source files</p>
+<h1>Lynx DNS — Project Map</h1>
+<p class="subtitle">C++17 local DNS server &middot; v0.8.0 &middot; ~5,800 LOC across 15 source files</p>
 
 <nav class="toc">
   <ul>
@@ -256,8 +256,8 @@
 
 <div class="grid grid-3">
   <div class="card">
-    <div class="card-header"><div class="icon" style="background:rgba(88,166,255,0.15);color:var(--accent);">N</div>Networking</div>
-    <p>Full DNS wire protocol (UDP + TCP). DoH upstream via HTTPS POST with persistent connection pools. Multi-upstream racing. HTTP CONNECT proxy tunneling with auto-fallback.</p>
+    <div class="card-header"><div class="icon" style="background:rgba(88,166,255,0.15);color:var(--accent);">S</div>SystemResolver</div>
+    <p>Three-strategy DNS resolution: getaddrinfo() (system nsswitch/D-Bus, ~1ms), raw UDP to system nameservers (~5ms), DoH via libcurl (~100ms). Circular dependency detection for systemd-resolved. Auto-adapts on network changes.</p>
   </div>
   <div class="card">
     <div class="card-header"><div class="icon" style="background:rgba(210,168,255,0.15);color:var(--accent3);">C</div>Caching</div>
@@ -272,7 +272,7 @@
 <table style="margin-top:1rem;">
   <tr><th>Aspect</th><th>Detail</th></tr>
   <tr><td>Language</td><td>C++17 (GCC 9+ / Clang 12+)</td></tr>
-  <tr><td>Dependencies</td><td>Boost.Asio (system), OpenSSL 1.1+, pthread</td></tr>
+  <tr><td>Dependencies</td><td>Boost.Asio (system), OpenSSL 1.1+, libcurl, pthread</td></tr>
   <tr><td>Build</td><td>CMake 3.15+, optional io_uring, SSE4.2 auto-detect</td></tr>
   <tr><td>License</td><td>MIT</td></tr>
   <tr><td>Platforms</td><td>Linux (SO_REUSEPORT, TCP_FASTOPEN, TCP keepalive)</td></tr>
@@ -284,14 +284,14 @@
 <div class="flow-container" style="font-family: 'SFMono-Regular', Consolas, monospace; font-size: 0.82rem; line-height: 1.7;">
 <pre style="border:none;padding:0;margin:0;background:transparent;">
 <span class="dir">dnss-cpp/</span>
-├── <span class="dir">src/</span>                          <span class="comment">← 14 source files (~5,600 LOC)</span>
+├── <span class="dir">src/</span>                          <span class="comment">← 15 source files (~5,800 LOC)</span>
 │   ├── <span class="file-hpp">main.cpp</span>                 <span class="comment">← Entry point, CLI parsing, signal handling, wiring</span>
 │   ├── <span class="file-hpp">dns_protocol.hpp/cpp</span>     <span class="comment">← DNS wire format: parse, pack, createQuery, SSE4.2 name compare</span>
 │   ├── <span class="file-hpp">dns_server.hpp/cpp</span>       <span class="comment">← UDP/TCP listener, 16 SO_REUSEPORT workers, thread pool</span>
 │   ├── <span class="file-hpp">resolver.hpp</span>             <span class="comment">← Abstract Resolver interface (query, peekCache, init, maintain)</span>
 │   ├── <span class="file-hpp">caching_resolver.hpp/cpp</span> <span class="comment">← Dual-tier cache (L1 turbo + L2 LRU), stale-while-revalidate</span>
-│   ├── <span class="file-hpp">http_resolver.hpp/cpp</span>    <span class="comment">← HTTPS connection pool, proxy detection, multi-upstream racing</span>
-│   ├── <span class="file-hpp">connection_controller.hpp/cpp</span> <span class="comment">← Background health-check, reconnect queue, idle probing</span>
+│   ├── <span class="file-hpp">system_resolver.hpp/cpp</span>  <span class="comment">← Three-strategy resolver: getaddrinfo, UDP, DoH via libcurl</span>
+│   ├── <span class="file-hpp">http_resolver.hpp/cpp</span>    <span class="comment">← Legacy DoH proxy (unused, kept for reference)</span>
 │   ├── <span class="file-hpp">https_server.hpp/cpp</span>     <span class="comment">← HTTPS-to-DNS gateway (DoH server, Boost.Beast)</span>
 │   ├── <span class="file-hpp">auto_tuner.hpp/cpp</span>       <span class="comment">← Kalman PID controller, anomaly detection, turbo scaling</span>
 │   ├── <span class="file-hpp">latency_manager.hpp/cpp</span>  <span class="comment">← Urgency levels, bottleneck detection, boost computation</span>
@@ -313,7 +313,7 @@
 <!-- ═══════════════════════════════════════════════════════ -->
 <h2 id="architecture">Architecture &amp; Data Flow</h2>
 
-<h3>Primary Path: DNS → HTTPS Proxy</h3>
+<h3>Primary Path: DNS Resolution</h3>
 <div class="flow-container">
   <div class="flow-row">
     <div>
@@ -321,7 +321,7 @@
     </div>
     <div class="flow-arrow">→</div>
     <div>
-      <div class="flow-box fb-dns">DnsServer<br><small>UDP :53 / TCP :53</small></div>
+      <div class="flow-box fb-dns">DnsServer<br><small>UDP :5353 / TCP :5353</small></div>
       <div class="flow-label">16 SO_REUSEPORT workers</div>
     </div>
     <div class="flow-arrow">→</div>
@@ -332,7 +332,7 @@
     <div class="flow-arrow">→</div>
     <div>
       <div class="flow-box fb-dns">ThreadPool<br><small>24 workers</small></div>
-      <div class="flow-label">backpressure at 300</div>
+      <div class="flow-label">backpressure at 2000</div>
     </div>
     <div class="flow-arrow">→</div>
     <div>
@@ -341,13 +341,13 @@
     </div>
     <div class="flow-arrow">→</div>
     <div>
-      <div class="flow-box fb-resolver">HttpResolver<br><small>pooled HTTPS</small></div>
-      <div class="flow-label">multi-upstream racing</div>
+      <div class="flow-box fb-resolver">SystemResolver<br><small>3-strategy</small></div>
+      <div class="flow-label">getaddrinfo → UDP → DoH</div>
     </div>
     <div class="flow-arrow">→</div>
     <div>
-      <div class="flow-box fb-upstream">DoH Upstream<br><small>Cloudflare / Google</small></div>
-      <div class="flow-label">HTTP POST /dns-query</div>
+      <div class="flow-box fb-upstream">System DNS<br><small>getaddrinfo / UDP / DoH</small></div>
+      <div class="flow-label">auto-detects best path</div>
     </div>
   </div>
 </div>
@@ -371,7 +371,7 @@
     <div class="flow-arrow">→</div>
     <div>
       <div class="flow-box" style="border-color:var(--text-dim);color:var(--text-dim);">
-        Adjusts<br><small>conns / threads / TTLs / fan-out</small>
+        Adjusts<br><small>threads / TTLs / fan-out</small>
       </div>
     </div>
   </div>
@@ -381,32 +381,33 @@
     </div>
     <div class="flow-arrow">→</div>
     <div>
-      <div class="flow-box fb-monitor">MonitorServer<br><small>:8080 HTTP</small></div>
+      <div class="flow-box fb-monitor">MonitorServer<br><small>:8085 HTTP</small></div>
       <div class="flow-label">dashboard + /api/stats + /metrics</div>
     </div>
   </div>
 </div>
 
-<h3>Connection Lifecycle</h3>
+<h3>Network Probing &amp; Adaptation</h3>
 <div class="flow-container">
   <div class="flow-row">
     <div>
-      <div class="flow-box fb-resolver">warmUp()<br><small>async pool fill</small></div>
+      <div class="flow-box fb-resolver">probeLoop()<br><small>every 60s</small></div>
     </div>
     <div class="flow-arrow">→</div>
     <div>
-      <div class="flow-box fb-conn">ConnectionController<br><small>manage()</small></div>
-      <div class="flow-label">register + keepalive</div>
+      <div class="flow-box fb-dns">probeUdp()<br><small>UDP to 1.1.1.1</small></div>
+      <div class="flow-label">3s timeout</div>
     </div>
     <div class="flow-arrow">→</div>
     <div>
-      <div class="flow-box fb-conn">healthCheck<br><small>every 12s idle</small></div>
-      <div class="flow-label">DNS query probe</div>
+      <div class="flow-box fb-dns">probeGetaddrinfo()<br><small>first query only</small></div>
+      <div class="flow-label">2s timeout (circular dep detection)</div>
     </div>
     <div class="flow-arrow">→</div>
     <div>
-      <div class="flow-box" style="border-color:var(--red);color:var(--red);">reconnectLoop<br><small>single worker thread</small></div>
-      <div class="flow-label">queue-driven, 50ms backoff</div>
+      <div class="flow-box" style="border-color:var(--text-dim);color:var(--text-dim);">
+        Update<br><small>udpWorks_ / getaddrinfoWorks_</small>
+      </div>
     </div>
   </div>
 </div>
@@ -427,7 +428,7 @@
     <p style="font-size:0.85rem;">Listens on UDP and TCP simultaneously using <strong>SO_REUSEPORT</strong> with 16 kernel-level worker threads. Each worker opens its own socket, eliminating accept contention.</p>
     <ul style="font-size:0.82rem;margin-top:0.5rem;">
       <li><strong>Inline cache peek</strong> — UDP workers call <code>peekCache()</code> before enqueueing, bypassing the thread pool for cache hits (sub-millisecond).</li>
-      <li><strong>Backpressure</strong> — <code>tryEnqueue()</code> with limit of 300; when full, falls back to inline resolution instead of SERVFAIL.</li>
+      <li><strong>Backpressure</strong> — <code>tryEnqueue()</code> with limit of 2000; when full, falls back to inline resolution instead of SERVFAIL.</li>
       <li><strong>Rate limiter</strong> — Sharded token bucket (16 shards, FNV-1a hash) — 100 queries/sec per client IP.</li>
       <li><strong>TCP</strong> — Separate thread pool (16 workers, 32 limit) prevents TCP from starving UDP.</li>
       <li><strong>Domain overrides</strong> — Per-domain upstream routing via <code>DomainMap</code>.</li>
@@ -457,45 +458,39 @@
     </ul>
   </div>
 
-  <!-- HttpResolver -->
+  <!-- SystemResolver -->
   <div class="card">
     <div class="card-header">
-      <div class="icon" style="background:rgba(240,136,62,0.15);color:var(--accent4);">HR</div>
-      HttpResolver
+      <div class="icon" style="background:rgba(240,136,62,0.15);color:var(--accent4);">SR</div>
+      SystemResolver
       <span class="tag tag-orange">core</span>
     </div>
-    <p style="font-size:0.85rem;margin-bottom:0.5rem;"><code>http_resolver.hpp/cpp</code> — 1,171 LOC (largest file)</p>
-    <p style="font-size:0.85rem;">Manages persistent HTTPS connections to DoH upstreams. Implements the <code>Resolver</code> interface.</p>
+    <p style="font-size:0.85rem;margin-bottom:0.5rem;"><code>system_resolver.hpp/cpp</code> — ~350 LOC</p>
+    <p style="font-size:0.85rem;">Three-strategy DNS resolver that auto-detects the best path on any network. Implements the <code>Resolver</code> interface.</p>
     <ul style="font-size:0.82rem;margin-top:0.5rem;">
-      <li><strong>Connection pools</strong> — <code>deque&lt;UpstreamPool&gt;</code>. Each pool holds up to 128 connections with round-robin selection via <code>atomic&lt;int&gt;</code> nextConn.</li>
-      <li><strong>Multi-upstream racing</strong> — When fan-out enabled, takes one connection from each pool and runs exchanges via <code>std::async</code>. First to respond wins (150ms deadline, 10ms poll).</li>
-      <li><strong>Proxy auto-detection</strong> — Chain: <code>~/.lynx-proxy</code> file → <code>https_proxy</code> env → GNOME gsettings → direct. File change detected via <code>stat()</code> mtime (throttled to 1/sec).</li>
-      <li><strong>HTTP CONNECT tunneling</strong> — Full proxy CONNECT with 200 validation, TLS SNI, fallback to direct on failure.</li>
-      <li><strong>Proxy failure marking</strong> — Static <code>proxyFailed_</code> flag skips proxy on failure. All proxy connections drained on mark.</li>
-      <li><strong>Built-in DNS IPs</strong> — Hardcoded IPs for Google, Cloudflare, Quad9 to avoid DNS loop when lynx is the system resolver.</li>
-      <li><strong>Health-aware pool balancing</strong> — <code>maintain()</code> shrinks unhealthy pools (error ratio > 30%) and grows healthy ones (&lt; 5%).</li>
-      <li><strong>Connection warm-up</strong> — Async pool fill on startup with health-check exchange.</li>
-      <li><strong>Pre-built headers</strong> — HTTP header prefix cached per connection (avoids per-query allocation).</li>
-      <li><strong>Background futures</strong> — Async tasks tracked in <code>vector&lt;future&gt;</code>, reaped on each query.</li>
+      <li><strong>getaddrinfo()</strong> — Leverages system nsswitch/D-Bus resolution. Fast (~1ms). Works on networks where systemd-resolved has real upstreams. Timed probe detects circular dependency.</li>
+      <li><strong>Raw UDP</strong> — Direct queries to system nameservers (from /etc/resolv.conf + 1.1.1.1/8.8.8.8 fallback). 3s timeout per server. Works on networks with direct DNS access.</li>
+      <li><strong>DoH via libcurl</strong> — HTTP POST to dns.google, cloudflare-dns.com, dns.quad9.net. 5s timeout. Auto-detects HTTP proxy from environment variables. Works through corporate proxies and captive portals.</li>
+      <li><strong>Circular dependency detection</strong> — Detects when resolv.conf points to loopback (systemd-resolved). Probes getaddrinfo with 2s timeout; if it hangs, marks as circular and skips for future queries.</li>
+      <li><strong>Network re-probe</strong> — Background thread every 60s re-checks UDP availability and getaddrinfo safety. Automatically adapts when switching networks.</li>
+      <li><strong>Query priority</strong> — A/AAAA queries try getaddrinfo → UDP → DoH. Other types (MX, TXT, NS, SOA) go directly to UDP → DoH.</li>
+      <li><strong>No connection pool</strong> — Stateless queries, no warmup wait. Server starts instantly.</li>
     </ul>
   </div>
 
-  <!-- ConnectionController -->
+  <!-- Network Probe -->
   <div class="card">
     <div class="card-header">
-      <div class="icon" style="background:rgba(248,81,73,0.15);color:var(--red);">CC</div>
-      ConnectionController
+      <div class="icon" style="background:rgba(248,81,73,0.15);color:var(--red);">NP</div>
+      Network Probe
       <span class="tag tag-red">infra</span>
     </div>
-    <p style="font-size:0.85rem;margin-bottom:0.5rem;"><code>connection_controller.hpp/cpp</code> — 458 LOC</p>
-    <p style="font-size:0.85rem;">Background lifecycle manager for all HTTPS connections. Owns the health-check and reconnect machinery.</p>
+    <p style="font-size:0.85rem;margin-bottom:0.5rem;">Built into <code>SystemResolver</code> — background thread that monitors network state.</p>
     <ul style="font-size:0.82rem;margin-top:0.5rem;">
-      <li><strong>Managed connections</strong> — Registry of <code>ManagedConn</code> structs tracking host, port, stream, connected flag, last use, failure count.</li>
-      <li><strong>Maintenance loop</strong> — Every 6s, checks all connections. Idle connections (> 3s unused, > 12s since last check) get health-checked.</li>
-      <li><strong>Health check</strong> — Sends a minimal DNS query over HTTP POST. Timeout: 2s. Resets failure count on success.</li>
-      <li><strong>Reconnect queue</strong> — Single worker thread processes <code>deque&lt;ReconnectWork&gt;</code>. 50ms sleep before reconnect attempt. <code>condition_variable</code> for wakeup.</li>
-      <li><strong>probeAllIdle()</strong> — Called by AutoTuner on high latency. Force-checks all idle connections.</li>
-      <li><strong>Atomic counters</strong> — <code>connectedCount_</code> and <code>TotalCount_</code> for instant utilization metrics.</li>
+      <li><strong>UDP probe</strong> — Sends DNS query to 1.1.1.1, 8.8.8.8. 2s timeout. Sets <code>udpWorks_</code> flag.</li>
+      <li><strong>getaddrinfo probe</strong> — First query only. 2s timeout. If hangs, marks circular dependency. Sets <code>getaddrinfoWorks_</code> flag.</li>
+      <li><strong>Re-probe loop</strong> — Every 60s, re-checks UDP. Logs network changes. Adapts strategy automatically.</li>
+      <li><strong>No connection management</strong> — Stateless queries, no pool to maintain. Server starts instantly.</li>
     </ul>
   </div>
 
@@ -636,13 +631,11 @@
   │
   ├── creates ──→ <span style="color:var(--accent2);">DnsServer</span>
   │                  ├── owns ──→ <span style="color:var(--accent3);">Resolver</span> (shared_ptr)
-  │                  │              └── <span style="color:var(--accent3);">CachingResolver</span> <span style="color:var(--text-dim);">[decorator, wraps HttpResolver]</span>
-  │                  │                     ├── owns ──→ <span style="color:var(--accent4);">HttpResolver</span> <span style="color:var(--text-dim);">[inner Resolver]</span>
-  │                  │                     │              ├── owns ──→ <span style="color:var(--accent4);">UpstreamPool[]</span> <span style="color:var(--text-dim);">[deque of connection pools]</span>
-  │                  │                     │              │              └── owns ──→ <span style="color:var(--accent4);">Connection[]</span> <span style="color:var(--text-dim);">[shared_ptr, SSL streams]</span>
-  │                  │                     │              ├── owns ──→ <span style="color:var(--red);">ConnectionController</span>
-  │                  │                     │              │              └── owns ──→ <span style="color:var(--red);">ManagedConn[]</span> + <span style="color:var(--red);">ReconnectQueue</span>
-  │                  │                     │              └── uses ──→ <span style="color:var(--accent3);">asio::ssl::context</span>
+  │                  │              └── <span style="color:var(--accent3);">CachingResolver</span> <span style="color:var(--text-dim);">[decorator, wraps SystemResolver]</span>
+  │                  │                     ├── owns ──→ <span style="color:var(--accent4);">SystemResolver</span> <span style="color:var(--text-dim);">[inner Resolver]</span>
+  │                  │                     │              ├── getaddrinfo() <span style="color:var(--text-dim);">[system nsswitch/D-Bus]</span>
+  │                  │                     │              ├── UDP sockets <span style="color:var(--text-dim);">[raw DNS to nameservers]</span>
+  │                  │                     │              └── libcurl <span style="color:var(--text-dim);">[DoH via HTTPS POST]</span>
   │                  │                     ├── uses ──→ <span style="color:var(--yellow);">AutoTuner</span> <span style="color:var(--text-dim);">[singleton]</span>
   │                  │                     └── uses ──→ <span style="color:var(--accent6);">PerfMonitor</span> <span style="color:var(--text-dim);">[singleton]</span>
   │                  ├── owns ──→ <span style="color:var(--green);">ThreadPool</span> <span style="color:var(--text-dim);">[dnsPool, tcpPool]</span>
@@ -683,13 +676,13 @@
     </div>
   </div>
   <div class="class-box" style="flex:1;min-width:250px;">
-    <div class="class-name" style="color:var(--accent4);">HttpResolver : Resolver</div>
+    <div class="class-name" style="color:var(--accent4);">SystemResolver : Resolver</div>
     <div class="class-detail">
       <span class="inherits">Leaf resolver</span><br>
-      <span class="owns">owns → deque&lt;UpstreamPool&gt;</span><br>
-      <span class="owns">owns → ConnectionController</span><br>
-      <span class="owns">owns → ssl::context</span><br>
-      Adds: connection pooling, proxy, multi-upstream
+      <span class="owns">owns → getaddrinfo / UDP sockets / libcurl</span><br>
+      <span class="owns">owns → probe thread (60s re-probe)</span><br>
+      Adds: network-aware 3-strategy resolution<br>
+      No connection pool, instant startup
     </div>
   </div>
 </div>
@@ -756,68 +749,54 @@
 </table>
 
 <!-- ═══════════════════════════════════════════════════════ -->
-<h2 id="networking">Networking &amp; Connections</h2>
+<h2 id="networking">Networking &amp; Resolution</h2>
 
-<h3>Connection Pool Architecture</h3>
+<h3>SystemResolver Strategy Selection</h3>
 <div class="flow-container" style="font-size:0.82rem;">
 <pre style="border:none;padding:0;margin:0;background:transparent;">
-<span style="color:var(--accent4);">HttpResolver</span>
+<span style="color:var(--accent4);">SystemResolver::query(req)</span>
   │
-  ├── pools_[0] <span style="color:var(--text-dim);">[primary upstream: dns.google]</span>
-  │   ├── connections[0..N]  <span style="color:var(--text-dim);">[max 128/pool]</span>
-  │   │   ├── stream: <span style="color:var(--accent);">ssl::stream&lt;tcp::socket&gt;</span>
-  │   │   ├── connected: atomic&lt;bool&gt;
-  │   │   ├── inUse: atomic&lt;bool&gt;  <span style="color:var(--text-dim);">[exclusive use flag]</span>
-  │   │   ├── headerPrefix: string  <span style="color:var(--text-dim);">[pre-built HTTP header]</span>
-  │   │   └── poolRef → UpstreamPool
-  │   ├── errors / successes: atomic&lt;int&gt;  <span style="color:var(--text-dim);">[health tracking]</span>
-  │   └── growMutex
+  ├── A/AAAA queries:
+  │   ├── 1. <span style="color:var(--accent4);">getaddrinfo()</span> ──→ <span style="color:var(--accent2);">HIT</span>: return A/AAAA records    <span style="color:var(--text-dim);">[~1ms, system nsswitch]</span>
+  │   │     (skipped if circular dependency detected)
+  │   │
+  │   └── Fall through to UDP/DoH...
   │
-  ├── pools_[1] <span style="color:var(--text-dim);">[secondary upstream: cloudflare-dns.com] (optional)</span>
-  │   └── (same structure)
+  ├── 2. <span style="color:var(--accent4);">queryUdp()</span> ──→ <span style="color:var(--accent2);">HIT</span>: return response               <span style="color:var(--text-dim);">[~5ms, raw UDP to 1.1.1.1]</span>
+  │     (skipped if udpWorks_ == false)
   │
-  └── connCtrl_: <span style="color:var(--red);">ConnectionController</span>
-      ├── managed_: vector&lt;ManagedConn&gt;  <span style="color:var(--text-dim);">[all registered connections]</span>
-      ├── reconnectQueue_: deque&lt;ReconnectWork&gt;
-      └── openFunc_: function&lt;bool(...)&gt;  <span style="color:var(--text-dim);">[callback to HttpResolver::openFunc]</span>
+  ├── 3. <span style="color:var(--accent4);">queryDoh()</span> ──→ <span style="color:var(--accent2);">HIT</span>: return response               <span style="color:var(--text-dim);">[~100ms, HTTPS POST via libcurl]</span>
+  │     (tries dns.google, cloudflare-dns.com, dns.quad9.net)
+  │
+  ├── 4. Retry <span style="color:var(--accent4);">queryUdp()</span> <span style="color:var(--text-dim);">[last resort, even if probe failed]</span>
+  │
+  └── 5. Return SERVFAIL
 </pre>
 </div>
 
-<h3>Query Execution Path (doPost)</h3>
+<h3>Circular Dependency Detection</h3>
 <div class="flow-container" style="font-size:0.82rem;">
 <pre style="border:none;padding:0;margin:0;background:transparent;">
-<span style="color:var(--accent4);">doPost(req, allowFanOut)</span>
-  │
-  ├── 1. ensurePoolSize() for each pool
-  │
-  ├── 2. If fanOut enabled → <span style="color:var(--accent5);">raceUpstreams(wire)</span>
-  │     ├── Take one conn from each pool (round-robin)
-  │     ├── Launch async exchange per conn
-  │     ├── Poll at 10ms intervals, 150ms deadline
-  │     └── First successful reply wins; wait for all to finish before releasing inUse
-  │
-  ├── 3. Retry loop (deadline: 400ms / 600ms proxy)
-  │     ├── getNextConnection() per pool (round-robin, skip disconnected/inUse)
-  │     ├── conn->exchange(wire)  <span style="color:var(--text-dim);">[HTTP POST with keep-alive]</span>
-  │     ├── success → notifyUsed(), return
-  │     └── failure → notifyFailure() → queue reconnect
-  │
-  ├── 4. No connected conns → sync reopen (1 per pool)
-  │     ├── conn->open()  <span style="color:var(--text-dim);">[proxy → direct fallback]</span>
-  │     ├── exchange(wire)
-  │     └── on success → openPoolAsync() to refill
-  │
-  └── 5. Return nullptr → CachingResolver tries fallback DNS
+<span style="color:var(--accent4);">resolv.conf</span> → 127.0.0.53 (systemd-resolved)
+                    │
+                    ├── forwards to 127.0.0.1:5353 (lynx)
+                    │         │
+                    │         └── CIRCULAR! getaddrinfo() hangs.
+                    │
+                    └── probeGetaddrinfo() with 2s timeout
+                          └── timeout → mark circular, skip getaddrinfo
+                          └── success → safe to use getaddrinfo
 </pre>
 </div>
 
-<h3>Proxy Detection Chain</h3>
+<h3>Network Change Adaptation</h3>
 <table>
-  <tr><th>Priority</th><th>Source</th><th>Behavior</th></tr>
-  <tr><td>1 (highest)</td><td><code>~/.lynx-proxy</code></td><td>Written by NM dispatcher. Empty file = direct (no fallback).</td></tr>
-  <tr><td>2</td><td><code>https_proxy</code> env</td><td>Standard proxy env var. Checked: https_proxy, HTTPS_PROXY, http_proxy, HTTP_PROXY.</td></tr>
-  <tr><td>3</td><td>GNOME gsettings</td><td><code>org.gnome.system.proxy</code> via <code>gsettings</code> subprocess.</td></tr>
-  <tr><td>4</td><td>Direct</td><td>No proxy. Default behavior.</td></tr>
+  <tr><th>Event</th><th>Detection</th><th>Response</th></tr>
+  <tr><td>Network loss</td><td>UDP probe fails (2s timeout)</td><td>Set <code>udpWorks_=false</code>, fall through to DoH</td></tr>
+  <tr><td>Network restored</td><td>UDP probe succeeds on next cycle</td><td>Set <code>udpWorks_=true</code>, prefer UDP</td></tr>
+  <tr><td>Docker (all blocked)</td><td>UDP + getaddrinfo both fail</td><td>DoH only (if proxy allows)</td></tr>
+  <tr><td>Home network</td><td>UDP works, getaddrinfo circular</td><td>UDP primary, DoH fallback</td></tr>
+  <tr><td>Work network</td><td>getaddrinfo works (D-Bus)</td><td>getaddrinfo primary (fastest)</td></tr>
 </table>
 
 <!-- ═══════════════════════════════════════════════════════ -->
@@ -887,12 +866,13 @@
     <h4>CMake Configuration</h4>
     <pre>
 cmake_minimum_required(VERSION 3.15)
-project(lynx VERSION 0.2.0)
+project(lynx VERSION 0.8.0)
 set(CMAKE_CXX_STANDARD 17)
 
 # Dependencies
 find_package(Boost REQUIRED COMPONENTS system)
 find_package(OpenSSL REQUIRED)
+find_package(CURL REQUIRED)
 
 # Optional: io_uring
 check_include_file("linux/io_uring.h" HAS_IO_URING)
@@ -922,6 +902,7 @@ cmake --build build -j$(nproc)</pre>
 Boost::system
 OpenSSL::SSL
 OpenSSL::Crypto
+CURL::libcurl
 pthread
 uring (optional)</pre>
   </div>
@@ -957,13 +938,10 @@ uring (optional)</pre>
     <pre>
 {
   "dns_listen_addr": ":5353",
-  "enable_dns_to_https": true,
   "enable_cache": true,
   "cache_file": "/tmp/lynx-dns-cache.bin",
   "log_level": "info",
-  "monitoring_listen_addr": "127.0.0.1:8085",
-  "https_upstream": "https://dns.google/dns-query",
-  "https_upstream2": "https://cloudflare-dns.com/dns-query"
+  "monitoring_listen_addr": "127.0.0.1:8085"
 }</pre>
   </div>
   <div class="card">
@@ -971,15 +949,9 @@ uring (optional)</pre>
     <table>
       <tr><td><code>--config</code></td><td>JSON config file path</td></tr>
       <tr><td><code>--dns_listen_addr</code></td><td>DNS listen (default: :53)</td></tr>
-      <tr><td><code>--enable_dns_to_https</code></td><td>Enable DNS→HTTPS proxy</td></tr>
-      <tr><td><code>--https_upstream</code></td><td>Primary DoH URL</td></tr>
-      <tr><td><code>--https_upstream2</code></td><td>Secondary DoH (racing)</td></tr>
       <tr><td><code>--enable_cache</code></td><td>Enable response caching</td></tr>
-      <tr><td><code>--fallback_upstream</code></td><td>Plain DNS fallback</td></tr>
-      <tr><td><code>--proxy</code></td><td>HTTPS proxy URL</td></tr>
       <tr><td><code>--monitoring_listen_addr</code></td><td>Dashboard address</td></tr>
       <tr><td><code>--log_level</code></td><td>debug/info/warn/error</td></tr>
-      <tr><td><code>--enable_https_to_dns</code></td><td>Enable HTTPS→DNS gateway</td></tr>
     </table>
   </div>
 </div>
@@ -988,13 +960,13 @@ uring (optional)</pre>
 <table>
   <tr><th>Signal</th><th>Action</th></tr>
   <tr><td><code>SIGINT</code> / <code>SIGTERM</code></td><td>Graceful drain (3s) → shutdown. Waits for in-flight queries.</td></tr>
-  <tr><td><code>SIGHUP</code></td><td>Reload proxy config from <code>~/.lynx-proxy</code> + env vars. Clears stale proxy state.</td></tr>
+  <tr><td><code>SIGHUP</code></td><td>Reload config. Re-probes network state.</td></tr>
 </table>
 
 <hr class="section-divider">
 
 <p style="color:var(--text-dim);font-size:0.82rem;text-align:center;margin-top:2rem;">
-  Generated for Lynx DoH DNS v0.2.0 &middot; ~5,600 LOC &middot; C++17 &middot; MIT License
+  Generated for Lynx DNS v0.8.0 &middot; ~5,800 LOC &middot; C++17 &middot; MIT License
 </p>
 
 </body>

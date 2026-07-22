@@ -1,22 +1,22 @@
-<img src="logo.png" alt="Lynx DoH DNS" width="128" align="right">
+<img src="logo.png" alt="Lynx DNS" width="128" align="right">
 
-# Lynx DoH DNS
-A high-performance DNS-over-HTTPS (DoH) daemon
+# Lynx DNS
+A high-performance local DNS server that works on any network
 
 ## Features
 
-- **DNS-to-HTTPS proxy** — resolves DNS queries via encrypted DoH upstreams (Cloudflare, Google, etc.)
+- **Works on any network** — auto-detects best DNS path: getaddrinfo(), raw UDP, or DoH via libcurl
 - **Dual-tier caching** — lock-free L1 turbo cache for hot domains + LRU L2 cache with preemptive refresh
-- **Connection pool** — maintains persistent HTTPS connections with health-checking and auto-scaling
-- **Auto-tuner** — Kalman-filtered PID controller that adapts connection count, thread pool, and cache refresh rates in real-time
-- **Latency manager** — urgency-driven control (0-5) with bottleneck detection that feeds thread/connection/cache boosts into the auto-tuner; keeps P95 within target
+- **Auto-tuner** — Kalman-filtered PID controller that adapts thread pool, cache TTLs, and fan-out rates in real-time
+- **Latency manager** — urgency-driven control (0-5) with bottleneck detection
 - **Monitoring dashboard** — built-in HTTP server with real-time latency/P95/hit-rate gauges
 - **Prometheus metrics** — `/metrics` endpoint for integration with monitoring stacks
-- **Pre-warming** — caches popular domains on startup for instant responsiveness
+- **Instant startup** — no connection pool warmup, starts immediately
+- **Network adaptation** — re-probes every 60s, adapts to network changes automatically
 
 ## Architecture
 
-<img src="lynxdohdnsmap.png" alt="Lynx DoH DNS Architecture" width="800">
+See [project-map.html](project-map.html) for the full interactive architecture map.
 
 ## Dependencies
 
@@ -24,12 +24,13 @@ A high-performance DNS-over-HTTPS (DoH) daemon
 - CMake 3.15+
 - Boost.Asio 1.74+
 - OpenSSL 1.1+
+- libcurl
 
 ## Build
 
 ```bash
 git clone <repo-url>
-cd lynx
+cd dnss-cpp
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ```
@@ -37,55 +38,32 @@ cmake --build build -j$(nproc)
 ## Quick Start
 
 ```bash
-# Start with Cloudflare DoH (uses https_proxy from environment if set)
-./build/lynx --enable_dns_to_https \
-  --https_upstream="https://cloudflare-dns.com/dns-query" \
-  --enable_cache \
-  --dns_listen_addr=":8053"
+# Start lynx — auto-detects DNS path on any network
+./build/lynx --config=config.json
 
 # Query it
-dig @127.0.0.1 -p 8053 google.com
+dig @127.0.0.1 -p 5353 google.com
 ```
-
-### With config file
-
-```bash
-./build/lynx --config=config.json
-```
-
-See `--help` for all options.
 
 ## CLI Options
 
 | Flag | Default | Description |
 |---|---|---|
 | `--dns_listen_addr` | `:53` | DNS server listen address |
-| `--https_upstream` | `https://dns.google/dns-query` | DoH upstream URL |
-| `--enable_dns_to_https` | — | Enable DNS-to-HTTPS proxy |
 | `--enable_cache` | — | Enable response caching |
-| `--enable_https_to_dns` | — | Enable HTTPS-to-DNS gateway |
-| `--fallback_upstream` | `8.8.8.8:53` | Fallback DNS resolver |
 | `--log_level` | `info` | Log level (debug/info/warn/error) |
 | `--monitoring_listen_addr` | `:8080` | Monitoring dashboard listen address |
-| `--proxy` | `$https_proxy` | HTTPS proxy URL |
-| `--no_proxy` | `$no_proxy` | Proxy bypass domains |
 
 ## Monitoring
 
-Open `http://localhost:8080` in a browser for the real-time dashboard:
-
-- Latency: avg / P95
-- Cache: L1 turbo hit rate / L2 main hit rate
-- Connection pool utilization
-- Thread pool load
-- Auto-tuner status
+Open `http://localhost:8080` in a browser for the real-time dashboard.
 
 JSON API: `http://localhost:8080/api/stats`
 Prometheus: `http://localhost:8080/metrics`
 
 ## Changelog
 
-See [CHANGELOG.html](changelog.html) for the full version history.
+See [CHANGELOG.html](CHANGELOG.html) for the full version history.
 
 ## License
 
