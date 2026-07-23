@@ -153,14 +153,38 @@ void SystemResolver::probeLoop() {
              std::string(getaddrinfoWorks_ ? "getaddrinfo ok" : "getaddrinfo unavailable") +
              " -> " + std::string(udpWorks_ || getaddrinfoWorks_ ? "system DNS" : "DoH fallback"));
 
+    int probeCycles = 0;
+    int getaddrinfoRetries = 0;
     while (running_) {
         std::this_thread::sleep_for(std::chrono::seconds(60));
         if (!running_) break;
+        probeCycles++;
+
         bool nowUdp = probeUdp();
         if (nowUdp != udpWorks_.load()) {
             udpWorks_ = nowUdp;
             LOG_INFO("SystemResolver: network changed -> UDP " +
                      std::string(nowUdp ? "available" : "lost"));
+        }
+
+        // Re-probe getaddrinfo every 5 minutes if it failed initially —
+        // network may have come up (e.g., proxy connection triggers
+        // systemd-resolved upstream configuration). Retry up to 6 times (30 min).
+        if (!getaddrinfoWorks_ && getaddrinfoRetries < 6 && (probeCycles % 5) == 0) {
+            getaddrinfoRetries++;
+            auto probeQuery = DnsMessage::createQuery("google.com", DnsType::A);
+            if (probeQuery) {
+                auto fut = std::async(std::launch::async, [this, &probeQuery]() {
+                    return queryGetaddrinfo(*probeQuery);
+                });
+                if (fut.wait_for(std::chrono::seconds(2)) == std::future_status::ready) {
+                    auto result = fut.get();
+                    if (result && !result->answers.empty()) {
+                        getaddrinfoWorks_ = true;
+                        LOG_INFO("SystemResolver: getaddrinfo now works (network came up)");
+                    }
+                }
+            }
         }
     }
 }
